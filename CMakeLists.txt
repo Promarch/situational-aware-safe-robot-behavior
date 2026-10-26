@@ -15,3 +15,15 @@ add_subdirectory(third_party/libfranka EXCLUDE_FROM_ALL)
 
 add_executable(read_state src/read_state.cpp)
 target_link_libraries(read_state Franka::Franka)
+
+# MotionGenerator and setDefaultBehavior from libfranka's examples.
+# Eigen3::Eigen3 comes from libfranka's own FindEigen3 module.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libfranka/cmake")
+find_package(Eigen3 REQUIRED)
+
+add_library(examples_common STATIC third_party/libfranka/examples/examples_common.cpp)
+target_include_directories(examples_common PUBLIC third_party/libfranka/examples)
+target_link_libraries(examples_common PUBLIC Franka::Franka Eigen3::Eigen3)
+
+add_executable(pick_place src/pick_place.cpp)
+target_link_libraries(pick_place examples_common)
