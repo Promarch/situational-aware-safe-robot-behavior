@@ -1,0 +1,17 @@
+# Build
+build/
+cmake-build-*/
+install/
+devel/
+*.o
+*.a
+*.so
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Logs / data
+*.log
+*.csv
