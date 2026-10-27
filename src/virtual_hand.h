@@ -2,7 +2,7 @@
 //
 // A schedule is a list of appearances, each timed from the start of one of the four segments
 // of the pick sequence (segment ids 1..4 in the order they run):
-//   0 home -> pre-pick (joint)   1 down (vertical)   2 up (vertical)   3 pre-pick -> home (joint)
+//   0 start -> pre-pick (joint)   1 down (vertical)   2 up (vertical)   3 pre-pick -> start
 // The hand holds still at its position while it is present. Schedules are plain CSV files
 // (see config/hand_schedule.csv) so tests can be tuned without recompiling.
 #pragma once

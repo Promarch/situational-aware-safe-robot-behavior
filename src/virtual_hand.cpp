@@ -10,8 +10,8 @@
 
 namespace virtual_hand {
 
-const char* const kSegmentNames[kNumSegments] = {"home->pre-pick", "down", "up",
-                                                 "pre-pick->home"};
+const char* const kSegmentNames[kNumSegments] = {"start->pre-pick", "down", "up",
+                                                 "pre-pick->start"};
 
 std::vector<Event> load(const std::string& path) {
   std::ifstream in(path);
@@ -40,8 +40,8 @@ std::vector<Event> load(const std::string& path) {
 }
 
 void print(const std::vector<Event>& events, std::ostream& out) {
-  out << "# segment,t_on,t_off,x,y,z   (segment: 0 home->pre-pick, 1 down, 2 up, "
-         "3 pre-pick->home;\n#  times from the segment start [s], position in the base frame [m])\n"
+  out << "# segment,t_on,t_off,x,y,z   (segment: 0 start->pre-pick, 1 down, 2 up, "
+         "3 pre-pick->start;\n#  times from the segment start [s], position in the base frame [m])\n"
       << std::fixed << std::setprecision(3);
   for (const Event& e : events) {
     out << e.segment << "," << e.t_on << "," << e.t_off << "," << e.position.x() << ","

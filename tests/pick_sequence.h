@@ -23,6 +23,15 @@ const scurve::JointLimits kJointLimits = scurve::frankaLimits(0.5, 0.5, 0.005);
 constexpr motion::CartesianLimits kVerticalLimits{0.05, 0.3, 3.0};
 constexpr double kZGrasp = poses::kTableZ + poses::kGraspHeight;
 
+// Start and end of the sequence: home with joint 1 turned +90 deg (EE on the robot's left), so
+// the joint segments to and from the pick point (on the right) are long.
+inline scurve::Vec7 startPose() {
+  scurve::Vec7 q = poses::kHome;
+  q[0] += M_PI_2;
+  return q;
+}
+const scurve::Vec7 kStart = startPose();
+
 inline Eigen::Vector3d eeOf(const franka::Model& model, const franka::RobotState& state,
                             const scurve::Vec7& q) {
   const std::array<double, 16> T =
@@ -37,7 +46,7 @@ struct Nominal {
 };
 
 inline Nominal nominal(const franka::Model& model, const franka::RobotState& state) {
-  const scurve::JointSCurve to_pre(poses::kHome, poses::kPrePickJoints, kJointLimits);
+  const scurve::JointSCurve to_pre(kStart, poses::kPrePickJoints, kJointLimits);
   const Eigen::Vector3d p_pre = eeOf(model, state, poses::kPrePickJoints);
   const scurve::Profile1D vertical = scurve::planRestToRest(
       p_pre.z() - kZGrasp, kVerticalLimits.v, kVerticalLimits.a, kVerticalLimits.j);

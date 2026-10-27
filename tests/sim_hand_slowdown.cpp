@@ -5,8 +5,8 @@
 //   control thread  - 1 kHz, runs the same JointSegment/VerticalSegment code as the robot
 //                     callbacks, integrating the commanded velocities like the robot does
 //   supervisor      - 30 Hz camera frames, Supervisor::onFrame() with the virtual hand
-// Sequence: home -joint-> pre-pick -vertical-> grasp height (0.3 s pause) -vertical-> pre-pick
-// -joint-> home.
+// Sequence: start -joint-> pre-pick -vertical-> grasp height (0.3 s pause) -vertical-> pre-pick
+// -joint-> start, where start is home with joint 1 turned +90 deg.
 //
 // Usage: sim_hand_slowdown [SCHEDULE.csv | --random SEED] [S_lim in J, default 0.05]
 //   writes sim_hand.csv (plot with scripts/plot_sim.py)
@@ -42,7 +42,7 @@ constexpr double kDt = 1e-3;
 constexpr double kFramePeriod = 1.0 / 30.0;
 constexpr double kGripperPause = 0.3;  // stands in for the grasp [s]
 
-enum SegmentIndex { kToPrePick, kDown, kUp, kToHome };
+enum SegmentIndex { kToPrePick, kDown, kUp, kToStart };
 
 struct LogRow {
   double t;
@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
     const franka::Model model = robot.loadModel();
     franka::RobotState state = robot.readOnce();  // only for F_T_EE, EE_T_K and load
 
-    const scurve::JointSCurve to_pre(poses::kHome, poses::kPrePickJoints, kJointLimits);
+    const scurve::JointSCurve to_pre(pick_sequence::kStart, poses::kPrePickJoints, kJointLimits);
     const double z_grasp = pick_sequence::kZGrasp;
     virtual_hand::Hand hand(
         pick_sequence::schedule(argc, argv, 1, pick_sequence::nominal(model, state)));
@@ -90,7 +90,7 @@ int main(int argc, char** argv) {
 
     std::vector<LogRow> log;
     log.reserve(200000);
-    scurve::Vec7 q = poses::kHome;
+    scurve::Vec7 q = pick_sequence::kStart;
     Clock::time_point tick = Clock::now();
     auto waitTick = [&] {
       tick += std::chrono::microseconds(1000);
@@ -133,7 +133,7 @@ int main(int argc, char** argv) {
     runVertical(kDown, z_grasp);
     for (double t = 0.0; t < kGripperPause; t += kDt) waitTick();
     runVertical(kUp, z_pre);
-    runJoint(kToHome, poses::kHome);
+    runJoint(kToStart, pick_sequence::kStart);
     done = true;
     camera.join();
 
@@ -183,9 +183,9 @@ int main(int argc, char** argv) {
     check(vertical_ratio[0] <= 1.001 && vertical_ratio[1] <= 1.01 && vertical_ratio[2] <= 1.05,
           "vertical segments within limits");
 
-    double home_err = 0.0;
-    for (size_t i = 0; i < 7; ++i) home_err = std::max(home_err, std::abs(q[i] - poses::kHome[i]));
-    check(home_err < 1e-6, "back at home (" + std::to_string(home_err * 1e3) + " mrad)");
+    double start_err = 0.0;
+    for (size_t i = 0; i < 7; ++i) start_err = std::max(start_err, std::abs(q[i] - pick_sequence::kStart[i]));
+    check(start_err < 1e-6, "back at the start pose (" + std::to_string(start_err * 1e3) + " mrad)");
 
     // Wherever the EE actually came within the radius of the hand, compare its speed with the
     // energy-limited speed there. Right after a hand appears nothing can have slowed down yet:

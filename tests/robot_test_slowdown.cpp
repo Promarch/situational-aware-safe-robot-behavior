@@ -2,8 +2,8 @@
 //
 // Same pick sequence as robot_test_pick, with the supervisor running in its own thread at the
 // camera rate (30 Hz) next to libfranka's 1 kHz control loop:
-//   home -joint-> pre-pick, open, -vertical-> grasp height, grasp, -vertical-> pre-pick,
-//   -joint-> home, release.
+//   start -joint-> pre-pick, open, -vertical-> grasp height, grasp, -vertical-> pre-pick,
+//   -joint-> start, release.   (start: home with joint 1 turned +90 deg)
 // The virtual hand only exists in software: the robot slows down for it but nothing is there.
 //
 // Usage: robot_test_slowdown [SCHEDULE.csv | --random SEED] [S_lim in J, default 0.05]
@@ -141,15 +141,17 @@ int main(int argc, char** argv) {
     }
     const double max_width = gripper.readOnce().max_width;
 
-    double home_offset = 0.0;
+    double start_offset = 0.0;
     for (size_t i = 0; i < 7; ++i) {
-      home_offset = std::max(home_offset, std::abs(start.q[i] - poses::kHome[i]));
+      start_offset = std::max(start_offset, std::abs(start.q[i] - pick_sequence::kStart[i]));
     }
-    if (home_offset > kAtHomeTolerance) {
-      if (!confirm("reset to home with libfranka MotionGenerator")) return 0;
+    if (start_offset > kAtHomeTolerance) {
+      if (!confirm("reset to the start pose (home, joint 1 +90 deg) with MotionGenerator")) {
+        return 0;
+      }
       setDefaultBehavior(robot);
-      MotionGenerator to_home(kResetSpeedFactor, poses::kHome);
-      robot.control(to_home);
+      MotionGenerator to_start(kResetSpeedFactor, pick_sequence::kStart);
+      robot.control(to_start);
     }
 
     // Segment ids 1..4 must be the four segments below, in order.
@@ -157,10 +159,10 @@ int main(int argc, char** argv) {
     supervision::Supervisor supervisor(model, start, params, &shared);
     CameraThread camera(&supervisor, &hand, &shared, Clock::now());
 
-    if (!confirm("S-curve home -> pre-pick (supervised)")) return 0;
+    if (!confirm("S-curve start -> pre-pick (supervised)")) return 0;
     // Rejected while the user stop is pressed, so only set right before moving.
     setDefaultBehavior(robot);
-    printJoint("home -> pre-pick",
+    printJoint("start -> pre-pick",
                motion::moveJointSCurve(robot, poses::kPrePickJoints, pick_sequence::kJointLimits,
                                        &shared));
     const double z_pre_pick = robot.readOnce().O_T_EE_d[14];
@@ -181,9 +183,9 @@ int main(int argc, char** argv) {
                   motion::moveVerticalTo(robot, z_pre_pick, pick_sequence::kVerticalLimits,
                                          &shared));
 
-    if (!confirm("S-curve pre-pick -> home (supervised)")) return 0;
-    printJoint("pre-pick -> home",
-               motion::moveJointSCurve(robot, poses::kHome, pick_sequence::kJointLimits, &shared));
+    if (!confirm("S-curve pre-pick -> start (supervised)")) return 0;
+    printJoint("pre-pick -> start",
+               motion::moveJointSCurve(robot, pick_sequence::kStart, pick_sequence::kJointLimits, &shared));
 
     camera.stop();
     std::cout << "\nSupervisor decisions:\n";

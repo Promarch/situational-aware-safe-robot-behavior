@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 RADIUS = 0.05
-NAMES = ["home->pre-pick", "down", "up", "pre-pick->home"]
+NAMES = ["start->pre-pick", "down", "up", "pre-pick->start"]
 
 path = sys.argv[1]
 d = np.genfromtxt(path, delimiter=",", names=True)
