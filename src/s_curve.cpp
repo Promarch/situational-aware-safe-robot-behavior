@@ -10,7 +10,48 @@ namespace scurve {
 
 namespace {
 constexpr double kMinDelta = 1e-9;  // joint displacements below this count as no motion
+
+using Durations = std::array<double, Profile1D::kMaxSegments>;
+
+// Appends up to 3 segments taking (v0, a0) to (v1, 0): jerk towards a peak acceleration
+// (at most a_max), hold it, jerk back to zero.
+void appendVelocityChange(double v0, double a0, double v1, double a_max, double j_max,
+                          Durations* durations, Durations* jerks, size_t* n) {
+  // Velocity reached by just bringing a0 back to zero decides the direction.
+  const double v_ramp = v0 + a0 * std::abs(a0) / (2.0 * j_max);
+  const double d = v1 >= v_ramp ? 1.0 : -1.0;
+  const double A = d * a0;          // initial acceleration in the direction of change
+  const double dv = d * (v1 - v0);  // velocity change in that direction
+
+  // Peak P: the change covers (2P^2 - A^2) / (2j) plus P * T_hold.
+  double P = a_max;
+  double T_hold = (dv - (2.0 * a_max * a_max - A * A) / (2.0 * j_max)) / a_max;
+  if (T_hold < 0.0) {
+    T_hold = 0.0;
+    P = std::sqrt(std::max(0.0, (2.0 * j_max * dv + A * A) / 2.0));
+  }
+  const double phases[3] = {(P - A) / j_max, T_hold, P / j_max};
+  const double phase_jerks[3] = {d * j_max, 0.0, -d * j_max};
+  for (int i = 0; i < 3; ++i) {
+    (*durations)[*n] = std::max(0.0, phases[i]);
+    (*jerks)[*n] = phase_jerks[i];
+    ++*n;
+  }
 }
+
+// Velocity change to vp, cruise for T_cruise, then stop.
+Profile1D changeCruiseStop(const State1D& start, double vp, double T_cruise, double a_max,
+                           double j_max) {
+  Durations durations{}, jerks{};
+  size_t n = 0;
+  appendVelocityChange(start.v, start.a, vp, a_max, j_max, &durations, &jerks, &n);
+  durations[n] = T_cruise;
+  jerks[n] = 0.0;
+  ++n;
+  appendVelocityChange(vp, 0.0, 0.0, a_max, j_max, &durations, &jerks, &n);
+  return Profile1D(start, durations, jerks, n);
+}
+}  // namespace
 
 Profile1D::Profile1D(const State1D& start, const std::array<double, kMaxSegments>& durations,
                      const std::array<double, kMaxSegments>& jerks, size_t count)
@@ -90,6 +131,41 @@ Profile1D planRestToRest(double L, double v_max, double a_max, double j_max) {
   return Profile1D(State1D{}, durations, jerks, 7);
 }
 
+double velocityChangeEnd(const Profile1D& profile) {
+  constexpr size_t kChangeSegments = 3;
+  return profile.segmentCount() > kChangeSegments ? profile.segment(kChangeSegments).t0
+                                                  : profile.duration();
+}
+
+Profile1D planFromState(const State1D& start, double p_end, double v_cap, double a_max,
+                        double j_max) {
+  if (v_cap <= 0.0) {
+    Durations durations{}, jerks{};
+    size_t n = 0;
+    appendVelocityChange(start.v, start.a, 0.0, a_max, j_max, &durations, &jerks, &n);
+    return Profile1D(start, durations, jerks, n);
+  }
+
+  const double distance = p_end - start.p;
+  auto covered = [&](double vp) {
+    return changeCruiseStop(start, vp, 0.0, a_max, j_max).end().p - start.p;
+  };
+
+  double vp = v_cap;
+  if (covered(vp) > distance) {
+    // Not enough room for v_cap: bisect the highest cruise speed that still stops in time.
+    // The lower bound is the current speed, which needs no extra room to reach.
+    double lo = std::min(start.v, v_cap), hi = v_cap;
+    for (int i = 0; i < 60; ++i) {
+      const double mid = 0.5 * (lo + hi);
+      (covered(mid) > distance ? hi : lo) = mid;
+    }
+    vp = lo;
+  }
+  const double T_cruise = vp > 0.0 ? std::max(0.0, (distance - covered(vp)) / vp) : 0.0;
+  return changeCruiseStop(start, vp, T_cruise, a_max, j_max);
+}
+
 JointLimits frankaLimits(double fraction_v, double fraction_a, double fraction_j) {
   JointLimits l;
   for (size_t i = 0; i < 7; ++i) {
@@ -130,12 +206,33 @@ JointSCurve::JointSCurve(const Vec7& q_start, const Vec7& q_goal, const JointLim
   }
 
   if (limiting_v_ >= 0) {
-    sigma_ = planRestToRest(1.0, v_sigma, a_sigma, j_sigma);
+    v_sigma_ = v_sigma;
+    a_sigma_ = a_sigma;
+    j_sigma_ = j_sigma;
+    sigma_ = planRestToRest(1.0, v_sigma_, a_sigma_, j_sigma_);
   }
 }
 
+bool JointSCurve::finished(double t) const {
+  return t >= duration() && (sigma_.segmentCount() == 0 || sigma_.end().p >= 1.0 - 1e-9);
+}
+
+void JointSCurve::replan(double t, double sigma_dot_cap) {
+  if (sigma_.segmentCount() == 0) {
+    return;  // no motion
+  }
+  const State1D now = sigma_.at(t - t_replan_);
+  sigma_ = planFromState(now, 1.0, std::min(sigma_dot_cap, v_sigma_), a_sigma_, j_sigma_);
+  t_replan_ = t;
+  replanned_ = true;
+}
+
+bool JointSCurve::changingVelocity(double t) const {
+  return replanned_ && t - t_replan_ < velocityChangeEnd(sigma_);
+}
+
 JointState JointSCurve::at(double t) const {
-  const State1D s = sigma_.at(t);
+  const State1D s = sigma_.at(t - t_replan_);
   // With no motion sigma_ is empty; keep the joints at the start.
   const double p = sigma_.segmentCount() > 0 ? s.p : 0.0;
   JointState out;

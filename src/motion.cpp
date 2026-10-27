@@ -10,25 +10,22 @@
 namespace motion {
 
 JointMotionResult moveJointSCurve(franka::Robot& robot, const scurve::Vec7& q_goal,
-                                  const scurve::JointLimits& limits) {
-  // The robot integrates our dq into q_d. Plan from q_d at the first tick so the path starts
-  // exactly where the robot is holding.
-  std::optional<scurve::JointSCurve> traj;
+                                  const scurve::JointLimits& limits,
+                                  supervision::Shared* shared) {
+  // The robot integrates our dq into q_d.
+  JointSegment segment(q_goal, limits, shared);
   JointMotionResult result;
   franka::RobotState last_state;
   robot.control([&](const franka::RobotState& state,
                     franka::Duration period) -> franka::JointVelocities {
     result.duration += period.toSec();
-    if (!traj) {
-      traj.emplace(state.q_d, q_goal, limits);
-    }
-    const scurve::JointState ref = traj->at(result.duration);
+    const scurve::JointState ref = segment.step(result.duration, state.q_d);
     for (size_t i = 0; i < 7; ++i) {
       result.max_lag = std::max(result.max_lag, std::abs(ref.q[i] - state.q_d[i]));
     }
     last_state = state;
     franka::JointVelocities cmd(ref.dq);
-    if (result.duration >= traj->duration()) {
+    if (segment.finished(result.duration)) {
       return franka::MotionFinished(cmd);
     }
     return cmd;
@@ -41,30 +38,27 @@ JointMotionResult moveJointSCurve(franka::Robot& robot, const scurve::Vec7& q_go
 }
 
 VerticalMotionResult moveVerticalTo(franka::Robot& robot, double z_target,
-                                    const CartesianLimits& limits) {
-  std::optional<scurve::Profile1D> profile;
-  double direction = 1.0;
+                                    const CartesianLimits& limits, supervision::Shared* shared) {
+  VerticalSegment segment(z_target, limits, shared);
+  bool first = true;
   double x0 = 0.0, y0 = 0.0;
   VerticalMotionResult result;
   franka::RobotState last_state;
   robot.control([&](const franka::RobotState& state,
                     franka::Duration period) -> franka::CartesianVelocities {
     result.duration += period.toSec();
-    if (!profile) {
-      // Plan from the commanded pose so the distance is exact.
-      const double dz = z_target - state.O_T_EE_d[14];
-      direction = dz >= 0.0 ? 1.0 : -1.0;
-      profile = scurve::planRestToRest(std::abs(dz), limits.v, limits.a, limits.j);
+    if (first) {
       x0 = state.O_T_EE[12];
       y0 = state.O_T_EE[13];
+      first = false;
     }
     result.max_xy_deviation =
         std::max(result.max_xy_deviation,
                  std::hypot(state.O_T_EE[12] - x0, state.O_T_EE[13] - y0));
     last_state = state;
-    const double vz = direction * profile->at(result.duration).v;
+    const double vz = segment.step(result.duration, state.O_T_EE_d, state.q);
     franka::CartesianVelocities cmd(std::array<double, 6>{{0.0, 0.0, vz, 0.0, 0.0, 0.0}});
-    if (result.duration >= profile->duration()) {
+    if (segment.finished(result.duration)) {
       return franka::MotionFinished(cmd);
     }
     return cmd;

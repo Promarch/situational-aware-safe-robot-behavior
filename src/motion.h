@@ -4,6 +4,8 @@
 #include <franka/robot.h>
 
 #include "s_curve.h"
+#include "segments.h"
+#include "supervision.h"
 
 namespace motion {
 
@@ -14,14 +16,10 @@ struct JointMotionResult {
 };
 
 // Synchronized joint S-curve from the robot's current q_d to q_goal, sent as joint velocities.
+// With `shared`, the supervisor can slow it down or stop it on the path.
 JointMotionResult moveJointSCurve(franka::Robot& robot, const scurve::Vec7& q_goal,
-                                  const scurve::JointLimits& limits);
-
-struct CartesianLimits {
-  double v;  // [m/s]
-  double a;  // [m/s^2]
-  double j;  // [m/s^3]
-};
+                                  const scurve::JointLimits& limits,
+                                  supervision::Shared* shared = nullptr);
 
 struct VerticalMotionResult {
   double duration = 0.0;        // [s]
@@ -32,8 +30,10 @@ struct VerticalMotionResult {
 
 // Straight vertical EE motion to absolute height z_target (base frame), sent as Cartesian
 // velocities with a 1-D S-curve; x, y and orientation are commanded to stay fixed.
+// With `shared`, the supervisor can slow it down or stop it on the path.
 VerticalMotionResult moveVerticalTo(franka::Robot& robot, double z_target,
-                                    const CartesianLimits& limits);
+                                    const CartesianLimits& limits,
+                                    supervision::Shared* shared = nullptr);
 
 // EE motion to an absolute pose through the Cartesian pose interface (the robot solves IK):
 // straight-line position and slerp orientation, both driven by one S-curve. Returns the
