@@ -27,3 +27,11 @@ target_link_libraries(examples_common PUBLIC Franka::Franka Eigen3::Eigen3)
 
 add_executable(pick_place src/pick_place.cpp)
 target_link_libraries(pick_place examples_common)
+
+# 7-axis jerk-limited S-curve trajectory.
+add_library(s_curve STATIC src/s_curve.cpp)
+target_include_directories(s_curve PUBLIC src)
+target_link_libraries(s_curve PUBLIC Franka::Franka)
+
+add_executable(test_s_curve tests/test_s_curve.cpp)
+target_link_libraries(test_s_curve s_curve)
