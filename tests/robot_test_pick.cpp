@@ -33,9 +33,12 @@ constexpr motion::CartesianLimits kVerticalLimits{0.05, 0.3, 3.0};
 // Gripper.
 constexpr double kGripperSpeed = 0.05;   // [m/s]
 constexpr double kGraspForce = 15.0;     // [N]
-constexpr double kGraspWidth = 0.0;      // unknown object: accept any width via epsilon_outer
-constexpr double kGraspEpsilonInner = 0.005;
-constexpr double kGraspEpsilonOuter = 0.1;
+// The gripper only keeps the grasp force if the final width lands inside
+// (width - epsilon_inner, width + epsilon_outer); otherwise it reports failure and lets go.
+// Width measured on the test object (fingers stopped at 47.9 mm).
+constexpr double kGraspWidth = 0.048;
+constexpr double kGraspEpsilonInner = 0.01;
+constexpr double kGraspEpsilonOuter = 0.01;
 
 void printJointResult(const char* name, const motion::JointMotionResult& r) {
   std::cout << name << ": " << r.duration << " s, max lag " << r.max_lag * 1e3
@@ -93,7 +96,9 @@ int main() {
     if (!confirm("vertical down to 2 cm above the table")) return 0;
     printVerticalResult("down", z_grasp, motion::moveVerticalTo(robot, z_grasp, kVerticalLimits));
 
-    std::cout << "Grasping with " << kGraspForce << " N...\n";
+    const franka::GripperState before = gripper.readOnce();
+    std::cout << "Before grasp: width " << before.width << " m, is_grasped " << std::boolalpha
+              << before.is_grasped << "\nGrasping with " << kGraspForce << " N...\n";
     const bool grasped = gripper.grasp(kGraspWidth, kGripperSpeed, kGraspForce,
                                        kGraspEpsilonInner, kGraspEpsilonOuter);
     const franka::GripperState after = gripper.readOnce();

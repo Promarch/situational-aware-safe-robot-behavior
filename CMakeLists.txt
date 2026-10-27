@@ -43,3 +43,6 @@ target_link_libraries(record_pre_pick robot_motion)
 
 add_executable(robot_test_pick tests/robot_test_pick.cpp)
 target_link_libraries(robot_test_pick robot_motion)
+
+add_executable(gripper_test src/gripper_test.cpp)
+target_link_libraries(gripper_test Franka::Franka)
