@@ -177,6 +177,10 @@ int main() {
       // Crawls at 10% almost to the end, then resumes: too close for full speed, so the
       // cruise speed must be lowered to still stop exactly on the goal.
       {"resume_near_end", {{0.5, 0.1}, {12.5, 1.0}}, true},
+      // Resume while already in the final deceleration: there is no room to hold the current
+      // speed, so the profile must keep decelerating and still stop exactly on the goal.
+      {"resume_in_final_decel", {{1.0, 0.6}, {2.45, 1.0}}, true},
+      {"resume_in_final_decel_late", {{1.0, 0.6}, {2.65, 1.0}}, true},
   };
   bool all_ok = true;
   for (const Scenario& sc : scenarios) all_ok &= run(sc);

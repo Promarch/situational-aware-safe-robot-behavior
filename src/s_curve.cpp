@@ -153,9 +153,15 @@ Profile1D planFromState(const State1D& start, double p_end, double v_cap, double
 
   double vp = v_cap;
   if (covered(vp) > distance) {
+    if (covered(0.0) >= distance) {
+      // Stopping right away already needs all the remaining distance (e.g. resuming during the
+      // final deceleration, where the original profile was stopping exactly on p_end): stop.
+      return planFromState(start, p_end, 0.0, a_max, j_max);
+    }
     // Not enough room for v_cap: bisect the highest cruise speed that still stops in time.
-    // The lower bound is the current speed, which needs no extra room to reach.
-    double lo = std::min(start.v, v_cap), hi = v_cap;
+    // It can be below the current speed: while decelerating, holding the current speed would
+    // already overshoot.
+    double lo = 0.0, hi = v_cap;
     for (int i = 0; i < 60; ++i) {
       const double mid = 0.5 * (lo + hi);
       (covered(mid) > distance ? hi : lo) = mid;

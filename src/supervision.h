@@ -6,8 +6,8 @@
 // highest speed at which every predicted point satisfies the energy limit
 //   v_safe = sqrt(2 * S_lim / m_eff),  m_eff = 1 / (u^T [J M^-1 J^T]_pos u),
 // u being the EE motion direction there. It sends that cap once and only looks again after the
-// control loop reports the velocity change done. When the hand no longer intrudes, it sends the
-// nominal speed to resume. The control loop applies a cap by re-planning from its own state.
+// control loop reports the velocity change done and the reached speed was held for
+// hold_after_slowdown. When the hand no longer intrudes, it sends the nominal speed to resume. The control loop applies a cap by re-planning from its own state.
 #pragma once
 
 #include <array>
@@ -59,6 +59,7 @@ struct Params {
   double sample_dt = 0.01;
   double radius = 0.05;   // intrusion distance between a predicted EE point and the hand [m]
   double s_lim = 0.05;    // transferable energy limit [J]
+  double hold_after_slowdown = 0.3;  // no detection for this long once a slowdown is done [s]
 };
 
 struct HandObservation {
@@ -103,6 +104,7 @@ class Supervisor {
 
   uint32_t seq_ = 0;
   uint32_t waiting_for_ = 0;  // command seq whose velocity change we wait for, 0: none
+  bool holding_ = false;      // the command we wait for is a slowdown: hold afterwards
   uint32_t segment_ = 0;
 
   mutable std::mutex log_mutex_;

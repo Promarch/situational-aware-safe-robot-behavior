@@ -146,8 +146,13 @@ void Supervisor::onFrame(const HandObservation& hand, double now) {
     waiting_for_ = 0;
   }
   if (waiting_for_ != 0) {
-    // Computed once: look again only after our command was applied and its change finished.
+    // Computed once: look again only after our command was applied and its change finished,
+    // and after a slowdown hold the reached speed for a while without looking.
     if (s.applied_seq != waiting_for_ || s.changing) {
+      return;
+    }
+    const double change_end = s.t_replan + scurve::velocityChangeEnd(s.profile);
+    if (holding_ && s.t < change_end + params_.hold_after_slowdown) {
       return;
     }
     waiting_for_ = 0;
@@ -158,8 +163,10 @@ void Supervisor::onFrame(const HandObservation& hand, double now) {
   const double kEps = 1e-6 * s.nominal;
   if (intrusion && cap < s.cap - kEps) {
     send(s, cap, now, "hand intrudes, slow down");
+    holding_ = true;
   } else if (!intrusion && s.cap < s.nominal - kEps) {
     send(s, s.nominal, now, hand.present ? "hand clear of the path, resume" : "hand gone, resume");
+    holding_ = false;
   }
 }
 

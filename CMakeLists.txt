@@ -34,7 +34,8 @@ add_executable(test_s_curve tests/test_s_curve.cpp)
 target_link_libraries(test_s_curve s_curve)
 
 # Robot motions (joint S-curve, vertical and Cartesian pose moves) and hand-aware supervision.
-add_library(robot_motion STATIC src/motion.cpp src/segments.cpp src/supervision.cpp)
+add_library(robot_motion STATIC src/motion.cpp src/segments.cpp src/supervision.cpp
+            src/virtual_hand.cpp)
 target_include_directories(robot_motion PUBLIC src)
 target_link_libraries(robot_motion PUBLIC s_curve examples_common)
 
@@ -53,3 +54,6 @@ target_link_libraries(test_replan s_curve)
 add_executable(sim_hand_slowdown tests/sim_hand_slowdown.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(sim_hand_slowdown robot_motion Threads::Threads)
+
+add_executable(robot_test_slowdown tests/robot_test_slowdown.cpp)
+target_link_libraries(robot_test_slowdown robot_motion Threads::Threads)
