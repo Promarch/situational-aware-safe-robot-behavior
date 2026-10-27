@@ -35,3 +35,6 @@ target_link_libraries(s_curve PUBLIC Franka::Franka)
 
 add_executable(test_s_curve tests/test_s_curve.cpp)
 target_link_libraries(test_s_curve s_curve)
+
+add_executable(robot_test_s_curve tests/robot_test_s_curve.cpp)
+target_link_libraries(robot_test_s_curve s_curve examples_common)

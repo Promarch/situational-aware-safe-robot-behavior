@@ -12,6 +12,12 @@ using CartesianPose = std::array<double, 16>;  // column-major 4x4, same layout 
 // Franka standard "ready" pose.
 constexpr JointPose kHome = {{0, -M_PI_4, 0, -3 * M_PI_4, 0, M_PI_2, M_PI_4}};
 
+// Joint configuration recorded with read_state above the pick point on 2026-10-26
+// (EE at x=0.560 y=-0.255 z=0.097, tool axis ~1 deg from vertical). Used as a reset pose
+// until IK for kPrePick is available.
+constexpr JointPose kPrePickJoints = {
+    {-0.017395, 0.575934, -0.416741, -1.959414, 0.328241, 2.469573, 1.704578}};
+
 // Height of the table surface in the base frame [m].
 constexpr double kTableZ = 0.0;
 
