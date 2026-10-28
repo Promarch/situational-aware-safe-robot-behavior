@@ -15,5 +15,6 @@ find_package(Eigen3 REQUIRED)
 find_package(Threads REQUIRED)
 
 # --- Subdirectories ------------------------------------------------------
+add_subdirectory(apps)
 add_subdirectory(libs/udp_listener)
 
