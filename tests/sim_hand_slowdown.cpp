@@ -47,6 +47,7 @@ enum SegmentIndex { kToPrePick, kDown, kUp, kToStart };
 struct LogRow {
   double t;
   int segment;
+  double t_segment;  // time since the segment started
   scurve::Vec7 q;
   Eigen::Vector3d ee;
   supervision::HandObservation hand;
@@ -101,7 +102,7 @@ int main(int argc, char** argv) {
       double t = 0.0;
       for (;; t += kDt) {
         const scurve::JointState ref = segment.step(t, q);
-        log.push_back({now(), seg, q, eeOf(model, state, q), hand.at(now())});
+        log.push_back({now(), seg, t, q, eeOf(model, state, q), hand.at(now())});
         if (segment.finished(t)) break;
         for (size_t i = 0; i < 7; ++i) q[i] += ref.dq[i] * kDt;
         waitTick();
@@ -117,7 +118,7 @@ int main(int argc, char** argv) {
       motion::VerticalSegment segment(z_target, kVerticalLimits, &shared);
       for (double t = 0.0;; t += kDt) {
         const double vz = segment.step(t, T, q);
-        log.push_back({now(), seg, q, eeOf(model, state, q), hand.at(now())});
+        log.push_back({now(), seg, t, q, eeOf(model, state, q), hand.at(now())});
         if (segment.finished(t)) break;
         T[14] += vz * kDt;
         // The robot solves IK for Cartesian velocity commands; follow the line with the model.
@@ -206,7 +207,8 @@ int main(int argc, char** argv) {
     double appeared_at = -1.0;
     std::ofstream csv("sim_hand.csv");
     csv << std::setprecision(8)
-        << "t,segment,x,y,z,speed,hand_present,hand_distance,v_safe\n";
+        << "t,segment,t_segment,x,y,z,speed,hand_present,hand_x,hand_y,hand_z,hand_distance,"
+           "v_safe\n";
     for (size_t k = 1; k < log.size(); ++k) {
       const LogRow& r = log[k];
       const Eigen::Vector3d v = (r.ee - log[k - 1].ee) / kDt;
@@ -232,8 +234,10 @@ int main(int argc, char** argv) {
           }
         }
       }
-      csv << r.t << "," << r.segment << "," << r.ee.x() << "," << r.ee.y() << "," << r.ee.z()
-          << "," << speed << "," << r.hand.present << "," << dist << "," << v_safe << "\n";
+      const Eigen::Vector3d& h = r.hand.position;
+      csv << r.t << "," << r.segment << "," << r.t_segment << "," << r.ee.x() << "," << r.ee.y()
+          << "," << r.ee.z() << "," << speed << "," << r.hand.present << "," << h.x() << ","
+          << h.y() << "," << h.z() << "," << dist << "," << v_safe << "\n";
     }
     std::cout << "  EE within " << params.radius * 100 << " cm of the hand:\n"
               << "    during the reaction time: " << reacting_ticks

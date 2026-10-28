@@ -92,28 +92,36 @@ void printVertical(const char* name, double z_target, const motion::VerticalMoti
 }
 
 // Writes the camera-rate log in the format of sim_hand.csv. Positions come from the model at the
-// logged joints; speeds are finite differences between frames of the same segment.
+// logged joints; speeds are finite differences between frames of the same segment, over the
+// control loop's own time stamps (the snapshot's t), so camera-thread jitter does not show up.
 void writeLog(const std::vector<FrameLog>& log, const franka::Model& model,
               const franka::RobotState& state, const supervision::Supervisor& supervisor,
               const std::string& path) {
   std::ofstream csv(path);
-  csv << std::setprecision(8) << "t,segment,x,y,z,speed,hand_present,hand_distance,v_safe\n";
+  csv << std::setprecision(8)
+      << "t,segment,t_segment,x,y,z,speed,hand_present,hand_x,hand_y,hand_z,hand_distance,"
+         "v_safe\n";
   for (size_t k = 1; k < log.size(); ++k) {
     const FrameLog& r = log[k];
     const FrameLog& prev = log[k - 1];
     if (r.snapshot.segment_id == 0) continue;
     const Eigen::Vector3d ee = pick_sequence::eeOf(model, state, r.snapshot.q);
-    const Eigen::Vector3d v = (ee - pick_sequence::eeOf(model, state, prev.snapshot.q)) /
-                              (r.t - prev.t);
-    const double speed = prev.snapshot.segment_id == r.snapshot.segment_id ? v.norm() : 0.0;
+    const double dt = r.snapshot.t - prev.snapshot.t;
+    double speed = 0.0;
+    Eigen::Vector3d v = Eigen::Vector3d::Zero();
+    if (prev.snapshot.segment_id == r.snapshot.segment_id && dt > 0.0) {
+      v = (ee - pick_sequence::eeOf(model, state, prev.snapshot.q)) / dt;
+      speed = v.norm();
+    }
     double dist = -1.0, v_safe = -1.0;
     if (r.hand.present) {
       dist = (ee - r.hand.position).norm();
       if (speed > 1e-6) v_safe = supervisor.safeSpeed(r.snapshot.q, v / speed);
     }
-    csv << r.t << "," << static_cast<int>(r.snapshot.segment_id) - 1 << "," << ee.x() << ","
-        << ee.y() << "," << ee.z() << "," << speed << "," << r.hand.present << "," << dist << ","
-        << v_safe << "\n";
+    const Eigen::Vector3d& h = r.hand.position;
+    csv << r.t << "," << static_cast<int>(r.snapshot.segment_id) - 1 << "," << r.snapshot.t << ","
+        << ee.x() << "," << ee.y() << "," << ee.z() << "," << speed << "," << r.hand.present
+        << "," << h.x() << "," << h.y() << "," << h.z() << "," << dist << "," << v_safe << "\n";
   }
 }
 }  // namespace
