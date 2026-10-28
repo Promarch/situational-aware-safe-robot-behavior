@@ -31,8 +31,8 @@ for seg in range(len(NAMES)):
         continue
     if has_segment_time:
         t = offset + d["t_segment"][sel]
-    else:  # older logs: wall-clock time
-        t = d["t"][sel] - d["t"][0]
+    else:  # older logs: wall-clock time from the segment's first frame
+        t = offset + d["t"][sel] - d["t"][sel][0]
     for ax in (ax_v, ax_d):
         ax.axvspan(t[0], t[-1], alpha=0.06 if seg % 2 else 0.12, color="gray")
     ax_v.text(t[0], 0, NAMES[seg], fontsize=8, va="bottom")
@@ -51,7 +51,7 @@ ax_v.legend(loc="upper right")
 ax_v.grid(alpha=0.3)
 ax_d.axhline(RADIUS, color="tab:red", ls="--", lw=1, label=f"radius {RADIUS * 100:.0f} cm")
 ax_d.set_ylabel("distance [m]")
-ax_d.set_xlabel("motion time [s]" if has_segment_time else "t [s]")
+ax_d.set_xlabel("motion time [s]")
 ax_d.legend(loc="upper right")
 ax_d.grid(alpha=0.3)
 
