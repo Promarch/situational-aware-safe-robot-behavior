@@ -1,0 +1,11 @@
+[project]
+name = "realsense-first"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "mediapipe>=1.1.1",
+    "mujoco>=3.17.0",
+    "numpy>=2.2.6",
+    "opencv-python>=5.0.0.93",
+    "pyrealsense2>=2.59.1.11053",
+]
