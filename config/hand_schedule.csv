@@ -1,0 +1,19 @@
+# Virtual hand schedule for sim_hand_slowdown and robot_test_slowdown.
+#
+# One line per appearance:  segment,t_on,t_off,x,y,z
+#   segment  0 start->pre-pick (joint)   1 down (vertical)   2 up (vertical)   3 pre-pick->start (joint)
+#            start = home with joint 1 turned +90 deg (EE at x=0.000 y=0.307 z=0.487)
+#   t_on, t_off  when the hand appears / disappears, seconds from the start of that segment
+#   x, y, z      hand center in the robot base frame [m]; it holds still while present
+# Lines starting with '#' are comments. Only one hand should be present at a time.
+#
+# Defaults: one hand per segment, exactly on the nominal path about 0.4 s ahead of the robot,
+# staying 3 s (longer than a joint segment), so the robot has to pass through it.
+# Nominal durations at 50 % joint limits: joint segments 1.92 s (cruise ~1.1 s, peak EE speed
+# ~0.86 m/s), vertical segments 3.86 s. With S_lim = 0.05 J the vertical segments (5 cm/s) stay
+# below v_safe (~0.16 m/s) and do not slow down.
+
+0,0.10,3.10,0.142,0.354,0.459     # start->pre-pick, appears while accelerating
+1,0.50,3.50,0.560,-0.254,0.106    # down
+2,0.50,3.50,0.560,-0.254,0.113    # up
+3,1.00,4.00,0.150,0.355,0.457     # pre-pick->start, appears while cruising at full speed

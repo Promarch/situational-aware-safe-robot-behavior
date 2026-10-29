@@ -49,41 +49,21 @@ void print(const std::vector<Event>& events, std::ostream& out) {
   }
 }
 
-std::vector<Event> random(unsigned seed, int extra,
+std::vector<Event> random(unsigned seed,
                           const std::function<Eigen::Vector3d(int, double)>& nominal_ee,
                           const std::array<double, kNumSegments>& nominal_duration) {
   std::mt19937 rng(seed);
   auto uniform = [&](double a, double b) { return std::uniform_real_distribution<>(a, b)(rng); };
-  auto randomOffset = [&](double max_radius) {
-    Eigen::Vector3d d(uniform(-1, 1), uniform(-1, 1), uniform(-1, 1));
-    return Eigen::Vector3d(d.normalized() * uniform(0.0, max_radius));
-  };
   std::vector<Event> events;
-  // Placed where the nominal motion will be `lead` seconds after the hand appears.
-  auto add = [&](int seg, double t_on, double lead, double max_offset) {
-    const Eigen::Vector3d p =
-        nominal_ee(seg, std::min(t_on + lead, nominal_duration[seg])) + randomOffset(max_offset);
-    events.push_back({seg, t_on, t_on + uniform(0.3, 1.2), p});
-  };
-  add(0, uniform(0.05, 0.2), uniform(0.2, 0.45), 0.03);  // while accelerating
-  add(1, uniform(0.3, 1.5), uniform(0.2, 0.45), 0.03);   // during the descent
-  for (int i = 0; i < extra; ++i) {
-    const int seg = std::uniform_int_distribution<>(0, kNumSegments - 1)(rng);
-    add(seg, uniform(0.0, nominal_duration[seg]), uniform(0.1, 0.45), 0.08);
+  for (int seg = 0; seg < kNumSegments; ++seg) {
+    // The first segment's hand appears while the robot is still accelerating; the others at a
+    // random time in the first 60 % of their segment.
+    const double t_on = seg == 0 ? uniform(0.05, 0.2) : uniform(0.0, 0.6 * nominal_duration[seg]);
+    // On the path, where the nominal motion will be `lead` seconds after the hand appears.
+    const double lead = uniform(0.2, 0.45);
+    const Eigen::Vector3d p = nominal_ee(seg, std::min(t_on + lead, nominal_duration[seg]));
+    events.push_back({seg, t_on, t_on + kHandDuration, p});
   }
-
-  // One hand at a time: within a segment, end each appearance before the next one starts.
-  std::sort(events.begin(), events.end(), [](const Event& a, const Event& b) {
-    return a.segment != b.segment ? a.segment < b.segment : a.t_on < b.t_on;
-  });
-  for (size_t i = 0; i + 1 < events.size(); ++i) {
-    if (events[i + 1].segment == events[i].segment) {
-      events[i].t_off = std::min(events[i].t_off, events[i + 1].t_on - 0.05);
-    }
-  }
-  events.erase(std::remove_if(events.begin(), events.end(),
-                              [](const Event& e) { return e.t_off <= e.t_on; }),
-               events.end());
   return events;
 }
 

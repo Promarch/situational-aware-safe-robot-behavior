@@ -73,7 +73,7 @@ inline std::vector<virtual_hand::Event> schedule(int argc, char** argv, int firs
     std::cout << "Hand schedule from " << argv[first] << ":\n";
   } else {
     const unsigned seed = argc > first + 1 ? std::strtoul(argv[first + 1], nullptr, 10) : 1;
-    events = virtual_hand::random(seed, 4, n.ee, n.duration);
+    events = virtual_hand::random(seed, n.ee, n.duration);
     std::cout << "Random hand schedule, seed " << seed << ":\n";
   }
   virtual_hand::print(events, std::cout);

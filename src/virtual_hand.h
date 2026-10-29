@@ -35,10 +35,13 @@ std::vector<Event> load(const std::string& path);
 // Writes a schedule in the same format.
 void print(const std::vector<Event>& events, std::ostream& out);
 
-// Random schedule near the nominal path: once while the first segment is still accelerating,
-// once during the descent, plus `extra` random appearances (some too far away to intrude).
+// How long a randomly generated hand stays [s].
+constexpr double kHandDuration = 3.0;
+
+// Random schedule: one hand per segment, on the nominal path a little ahead of the robot, staying
+// kHandDuration. The first segment's hand appears while the robot is still accelerating.
 // nominal_ee(segment, t) is the nominal EE position t seconds into a segment.
-std::vector<Event> random(unsigned seed, int extra,
+std::vector<Event> random(unsigned seed,
                           const std::function<Eigen::Vector3d(int, double)>& nominal_ee,
                           const std::array<double, kNumSegments>& nominal_duration);
 
