@@ -8,6 +8,10 @@
 
 #include "Eigen/Core"
 
+#if !defined(__BYTE_ORDER__) || __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+#error "hand_udp_protocol.hpp assumes a little-endian host (x86-64 / ARM64)"
+#endif
+
 namespace hand_udp {
 
 constexpr char kMagic[4] = {'H', 'A', 'N', 'D'};
@@ -57,7 +61,7 @@ struct Package {
     PackageHeader header{};
     std::array<Hand, kMaxHands> hands{};
     int n_hands = 0; // Seems redundant, since we already have the information in the header, but this is usefull 
-                        // when doing stuff like for (int i = 0; i < pkg.n_hands; ++i), since a uint8_t would trigger warnings
+                        // when doing stuff like "for (int i = 0; i < pkg.n_hands; ++i)", since a uint8_t would trigger warnings
 };
 
 // Validate and copy a received package. Returns false for anything malformed
@@ -84,4 +88,4 @@ inline bool seq_newer(std::uint32_t b, std::uint32_t a) {
   return static_cast<std::int32_t>(b - a) > 0;
 }
 
-}
+} // namespace hand_udp

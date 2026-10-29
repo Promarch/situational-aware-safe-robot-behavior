@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <mutex>
 #include <thread>
+#include <iostream>
 
 #include "udp_listener/udp_listener.hpp"
 
@@ -89,7 +90,9 @@ class HandReceiver {
         ++local.n_bad;  // ignore it -- do NOT treat a broken Package as "no hands"
         continue;
       }
-      if (have_seq) {
+      // Comparison with the previous packet 
+      // (have_seq) ensures that a packet was previously received
+      if (have_seq) { 
         std::uint32_t last = local.pkg.header.seq;
         if (!hand_udp::seq_newer(p.header.seq, last)) {
           // older or duplicate: drop, unless the jump is huge (sender restarted)
@@ -142,7 +145,7 @@ int main(int argc, char** argv) {
   const auto port = static_cast<std::uint16_t>(argc > 1 ? std::atoi(argv[1]) : 5005);
   const int seconds = argc > 2 ? std::atoi(argv[2]) : 10;
   const auto kStaleAfter = std::chrono::milliseconds(100);  // ~3 frames at 30 Hz
-  const Eigen::Vector3f kRef(0.0f, 0.0f, 0.8f);             // stand-in for the flange position
+  const Eigen::Vector3f kRef(0.0f, 0.0f, 0.0f);             // stand-in for the flange position
 
   HandReceiver rx(port, "127.0.0.1");
   std::printf("listening on 127.0.0.1:%u for %d s (simulated 1 kHz loop)\n", port, seconds);
@@ -181,6 +184,7 @@ int main(int argc, char** argv) {
                   (unsigned long long)snap.n_bad, lat_n ? lat_sum_ms / lat_n : 0.0, lat_max_ms,
                   snap.pkg.n_hands, std::isinf(dist) ? -1.0 : dist,
                   stale ? "STALE " : "", unlocated ? "UNLOCATED" : "");
+      std::cout << "Pts: " << snap.pkg.hands[0].pts << ". Sphere radius: " << snap.pkg.hands[0].s_radius << std::endl;
       lat_sum_ms = lat_max_ms = 0; lat_n = 0;
     }
     t_next += std::chrono::milliseconds(1);
