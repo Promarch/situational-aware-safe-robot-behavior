@@ -20,6 +20,19 @@ class SeqLock {
     seq_.store(s + 2, std::memory_order_release);
   }
 
+  // Single attempt, for the real-time thread: false if a write was in progress (try again next
+  // tick). A retry loop there could spin forever if it preempted the writer mid-write.
+  bool tryLoad(T* out) const {
+    const uint32_t before = seq_.load(std::memory_order_acquire);
+    if (before & 1u) {
+      return false;
+    }
+    std::atomic_thread_fence(std::memory_order_acquire);
+    *out = data_;
+    std::atomic_thread_fence(std::memory_order_acquire);
+    return seq_.load(std::memory_order_relaxed) == before;
+  }
+
   T load() const {
     T out;
     uint32_t before, after;

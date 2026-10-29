@@ -96,8 +96,6 @@ class JointSCurve {
   // the path). The motion still ends at rest at q_goal unless sigma_dot_cap is 0.
   void replan(double t, double sigma_dot_cap);
   double nominalSigmaVelocity() const { return v_sigma_; }
-  double sigmaAccelerationLimit() const { return a_sigma_; }
-  double sigmaJerkLimit() const { return j_sigma_; }
 
   // True while the velocity change started by the last replan() is still running.
   bool changingVelocity(double t) const;

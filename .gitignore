@@ -15,4 +15,3 @@ devel/
 # Logs / data
 *.log
 *.csv
-!config/*.csv

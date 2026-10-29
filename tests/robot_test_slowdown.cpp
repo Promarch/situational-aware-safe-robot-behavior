@@ -1,24 +1,33 @@
 // Robot test of the hand-aware slowdown with a virtual hand (no camera yet).
 //
-// Same pick sequence as robot_test_pick, with the supervisor running in its own thread at the
-// camera rate (30 Hz) next to libfranka's 1 kHz control loop:
 //   start -joint-> pre-pick, open, -vertical-> grasp height, grasp, -vertical-> pre-pick,
-//   -joint-> start, release.   (start: home with joint 1 turned +90 deg)
-// The virtual hand only exists in software: the robot slows down for it but nothing is there.
+//   -joint-> start, release.        (start: poses::kStart)
+// The supervisor runs at the camera rate (30 Hz) in its own thread next to libfranka's 1 kHz
+// control loop.
 //
-// Usage: robot_test_slowdown [SCHEDULE.csv | --random SEED] [S_lim in J, default 0.05]
-//   e.g.  robot_test_slowdown ../config/hand_schedule.csv
-//   writes robot_slowdown.csv (plot with scripts/plot_sim.py)
+// Virtual hand: in each of the two joint segments it appears kHandAfterTopSpeed after the
+// nominal motion reaches its top speed, on the path where the robot will be kHandLead later
+// (inside the prediction horizon, so the next camera frame triggers the slowdown), and stays
+// kHandDuration. It only exists in software: the robot slows down but nothing is there.
+//
+// Usage: robot_test_slowdown [S_lim in J, default 0.05]
+// Writes, then plot with  python3 ../scripts/plot_slowdown.py robot_slowdown.csv
+//   robot_slowdown.csv, one row per control tick:
+//     t, segment (0 start->pre-pick, 1 down, 2 up, 3 pre-pick->start), t_segment,
+//     ee_speed = |J(q) dq| [m/s], v_safe along the motion direction (every tick; empty at rest),
+//     hand_present, hand_distance (EE to hand, while present), dq1..dq7 measured,
+//     dq_d1..dq_d7 commanded [rad/s]
+//   robot_slowdown_decisions.csv: segment, t_segment, action (slow/resume), cap_percent
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <string>
 #include <thread>
-#include <vector>
 
+#include <Eigen/Core>
 #include <franka/exception.h>
 #include <franka/gripper.h>
 #include <franka/model.h>
@@ -27,122 +36,77 @@
 #include "confirm.h"
 #include "examples_common.h"
 #include "motion.h"
-#include "pick_sequence.h"
 #include "poses.h"
+#include "s_curve.h"
 #include "supervision.h"
-#include "virtual_hand.h"
 
 namespace {
-using Clock = std::chrono::steady_clock;
 constexpr const char* kRobotIp = "192.168.3.8";
-constexpr double kFramePeriod = 1.0 / 30.0;
-constexpr double kResetSpeedFactor = 0.2;
-constexpr double kAtHomeTolerance = 1e-3;  // [rad]
 
-constexpr double kGripperSpeed = 0.05;
-constexpr double kGraspForce = 15.0;
-constexpr double kGraspWidth = 0.048;  // test object
-constexpr double kGraspEpsilon = 0.01;
+const scurve::JointLimits kJointLimits = scurve::frankaLimits(0.5, 0.5, 0.005);
+constexpr motion::CartesianLimits kVerticalLimits{0.05, 0.3, 3.0};
+constexpr double kResetSpeedFactor = 0.2;  // MotionGenerator back to the start if not there
 
-struct FrameLog {
-  double t;
-  supervision::Snapshot snapshot;
-  supervision::HandObservation hand;
+constexpr double kGripperSpeed = 0.05;  // [m/s]
+constexpr double kGraspForce = 15.0;    // [N]
+constexpr double kGraspWidth = 0.048;   // test object [m]
+constexpr double kGraspEpsilon = 0.01;  // [m]
+
+constexpr double kFramePeriod = 1.0 / 30.0;  // camera [s]
+constexpr double kHandAfterTopSpeed = 0.2;   // [s]
+constexpr double kHandLead = 0.4;            // [s], < horizon
+constexpr double kHandDuration = 3.0;        // [s]
+
+struct Hand {
+  uint32_t segment_id;  // 1 start->pre-pick, 4 pre-pick->start
+  double t_on, t_off;   // time since the segment started [s]
+  Eigen::Vector3d position;
 };
-
-// Runs the supervisor at the camera rate until stopped; joins on destruction.
-class CameraThread {
- public:
-  CameraThread(supervision::Supervisor* supervisor, virtual_hand::Hand* hand,
-               supervision::Shared* shared, Clock::time_point t0)
-      : thread_([=] {
-          auto now = [t0] { return std::chrono::duration<double>(Clock::now() - t0).count(); };
-          Clock::time_point next = Clock::now();
-          while (!done_) {
-            const supervision::Snapshot s = shared->snapshot.load();
-            const double t = now();
-            const supervision::HandObservation obs = hand->observe(s, t);
-            supervisor->onFrame(obs, t);
-            log_.push_back({t, s, obs});
-            next += std::chrono::microseconds(static_cast<int>(kFramePeriod * 1e6));
-            std::this_thread::sleep_until(next);
-          }
-        }) {}
-  ~CameraThread() { stop(); }
-  void stop() {
-    done_ = true;
-    if (thread_.joinable()) thread_.join();
-  }
-  const std::vector<FrameLog>& log() const { return log_; }  // after stop()
-
- private:
-  std::atomic<bool> done_{false};
-  std::vector<FrameLog> log_;
-  std::thread thread_;  // last: starts after the other members exist
-};
-
-void printJoint(const char* name, const motion::JointMotionResult& r) {
-  std::cout << name << ": " << r.duration << " s, end error " << r.end_error * 1e3 << " mrad\n";
-}
-
-void printVertical(const char* name, double z_target, const motion::VerticalMotionResult& r) {
-  std::cout << name << ": " << r.duration << " s, measured z error "
-            << (r.z_end - z_target) * 1e3 << " mm, max xy deviation "
-            << r.max_xy_deviation * 1e3 << " mm\n";
-}
-
-// Writes the camera-rate log in the format of sim_hand.csv. Positions come from the model at the
-// logged joints; speeds are finite differences between frames of the same segment, over the
-// control loop's own time stamps (the snapshot's t), so camera-thread jitter does not show up.
-void writeLog(const std::vector<FrameLog>& log, const franka::Model& model,
-              const franka::RobotState& state, const supervision::Supervisor& supervisor,
-              const std::string& path) {
-  std::ofstream csv(path);
-  csv << std::setprecision(8)
-      << "t,segment,t_segment,x,y,z,speed,hand_present,hand_x,hand_y,hand_z,hand_distance,"
-         "v_safe\n";
-  for (size_t k = 1; k < log.size(); ++k) {
-    const FrameLog& r = log[k];
-    const FrameLog& prev = log[k - 1];
-    if (r.snapshot.segment_id == 0) continue;
-    const Eigen::Vector3d ee = pick_sequence::eeOf(model, state, r.snapshot.q);
-    const double dt = r.snapshot.t - prev.snapshot.t;
-    double speed = 0.0;
-    Eigen::Vector3d v = Eigen::Vector3d::Zero();
-    if (prev.snapshot.segment_id == r.snapshot.segment_id && dt > 0.0) {
-      v = (ee - pick_sequence::eeOf(model, state, prev.snapshot.q)) / dt;
-      speed = v.norm();
-    }
-    double dist = -1.0, v_safe = -1.0;
-    if (r.hand.present) {
-      dist = (ee - r.hand.position).norm();
-      if (speed > 1e-6) v_safe = supervisor.safeSpeed(r.snapshot.q, v / speed);
-    }
-    const Eigen::Vector3d& h = r.hand.position;
-    csv << r.t << "," << static_cast<int>(r.snapshot.segment_id) - 1 << "," << r.snapshot.t << ","
-        << ee.x() << "," << ee.y() << "," << ee.z() << "," << speed << "," << r.hand.present
-        << "," << h.x() << "," << h.y() << "," << h.z() << "," << dist << "," << v_safe << "\n";
-  }
-}
 }  // namespace
 
 int main(int argc, char** argv) {
   supervision::Params params;
-  const int s_lim_arg = argc > 1 && std::string(argv[1]) == "--random" ? 3 : 2;
-  if (argc > s_lim_arg) params.s_lim = std::atof(argv[s_lim_arg]);
+  if (argc > 1) params.s_lim = std::atof(argv[1]);
 
   try {
     franka::Robot robot(kRobotIp);
     franka::Gripper gripper(kRobotIp);
     const franka::Model model = robot.loadModel();
     const franka::RobotState start = robot.readOnce();
+    auto eeOf = [&](const scurve::Vec7& q) {
+      const std::array<double, 16> T =
+          model.pose(franka::Frame::kEndEffector, q, start.F_T_EE, start.EE_T_K);
+      return Eigen::Vector3d(T[12], T[13], T[14]);
+    };
 
-    virtual_hand::Hand hand(
-        pick_sequence::schedule(argc, argv, 1, pick_sequence::nominal(model, start)));
+    // --- Virtual hands from the nominal joint segments. A rest-to-rest profile reaches its top
+    // speed at the start of its 4th phase (after jerk up, constant acceleration, jerk down).
+    auto handFor = [&](uint32_t segment_id, const scurve::JointSCurve& nominal) {
+      const double t_top = nominal.sigma().segment(3).t0;
+      const double t_on = t_top + kHandAfterTopSpeed;
+      const Hand h{segment_id, t_on, t_on + kHandDuration, eeOf(nominal.at(t_on + kHandLead).q)};
+      std::cout << "Hand in segment " << segment_id << ": nominal top speed at " << t_top
+                << " s, hand appears at " << t_on << " s on the path at (" << h.position.transpose()
+                << ")\n";
+      return h;
+    };
+    const Hand hands[] = {
+        handFor(1, scurve::JointSCurve(poses::kStart, poses::kPrePickJoints, kJointLimits)),
+        handFor(4, scurve::JointSCurve(poses::kPrePickJoints, poses::kStart, kJointLimits))};
+    auto handAt = [&](uint32_t segment_id, double t_segment) {
+      supervision::HandObservation obs;
+      for (const Hand& h : hands) {
+        if (segment_id == h.segment_id && t_segment >= h.t_on && t_segment < h.t_off) {
+          obs = {true, h.position};
+        }
+      }
+      return obs;
+    };
     std::cout << "S_lim " << params.s_lim << " J, radius " << params.radius * 100
               << " cm, horizon " << params.horizon << " s, hold after slowdown "
               << params.hold_after_slowdown << " s\n";
 
+    // --- Preparation.
     if (gripper.readOnce().max_width < 0.01) {
       if (!confirm("gripper homing (fingers open fully, then close)")) return 0;
       gripper.homing();
@@ -151,59 +115,115 @@ int main(int argc, char** argv) {
 
     double start_offset = 0.0;
     for (size_t i = 0; i < 7; ++i) {
-      start_offset = std::max(start_offset, std::abs(start.q[i] - pick_sequence::kStart[i]));
+      start_offset = std::max(start_offset, std::abs(start.q[i] - poses::kStart[i]));
     }
-    if (start_offset > kAtHomeTolerance) {
+    if (start_offset > 1e-3) {
       if (!confirm("reset to the start pose (home, joint 1 +90 deg) with MotionGenerator")) {
         return 0;
       }
       setDefaultBehavior(robot);
-      MotionGenerator to_start(kResetSpeedFactor, pick_sequence::kStart);
+      MotionGenerator to_start(kResetSpeedFactor, poses::kStart);
       robot.control(to_start);
     }
 
-    // Segment ids 1..4 must be the four segments below, in order.
+    // --- Supervised sequence. Segment ids 1..4 are the four motions below, in order.
     supervision::Shared shared;
     supervision::Supervisor supervisor(model, start, params, &shared);
-    CameraThread camera(&supervisor, &hand, &shared, Clock::now());
+    motion::TickLog log(300000);  // 5 min of control ticks
+    std::atomic<bool> done{false};
+    std::thread camera([&] {
+      auto next = std::chrono::steady_clock::now();
+      while (!done) {
+        const supervision::Snapshot s = shared.snapshot.load();
+        supervisor.onFrame(handAt(s.segment_id, s.t));
+        next += std::chrono::microseconds(static_cast<int>(kFramePeriod * 1e6));
+        std::this_thread::sleep_until(next);
+      }
+    });
 
-    if (!confirm("S-curve start -> pre-pick (supervised)")) return 0;
-    // Rejected while the user stop is pressed, so only set right before moving.
-    setDefaultBehavior(robot);
-    printJoint("start -> pre-pick",
-               motion::moveJointSCurve(robot, poses::kPrePickJoints, pick_sequence::kJointLimits,
-                                       &shared));
-    const double z_pre_pick = robot.readOnce().O_T_EE_d[14];
+    auto sequence = [&]() -> bool {
+      if (!confirm("S-curve start -> pre-pick (supervised)")) return false;
+      // Rejected while the user stop is pressed, so only set right before moving.
+      setDefaultBehavior(robot);
+      double err = motion::moveJointSCurve(robot, poses::kPrePickJoints, kJointLimits, &shared,
+                                           &log);
+      std::cout << "start -> pre-pick done, end error " << err * 1e3 << " mrad\n";
+      const double z_pre_pick = robot.readOnce().O_T_EE_d[14];
+      const double z_grasp = poses::kTableZ + poses::kGraspHeight;
 
-    gripper.move(max_width, kGripperSpeed);
-    if (!confirm("vertical down to 2 cm above the table (supervised)")) return 0;
-    printVertical("down", pick_sequence::kZGrasp,
-                  motion::moveVerticalTo(robot, pick_sequence::kZGrasp,
-                                         pick_sequence::kVerticalLimits, &shared));
+      gripper.move(max_width, kGripperSpeed);
+      if (!confirm("vertical down to 2 cm above the table (supervised)")) return false;
+      double z = motion::moveVerticalTo(robot, z_grasp, kVerticalLimits, &shared, &log);
+      std::cout << "down done, z error " << (z - z_grasp) * 1e3 << " mm\n";
 
-    const bool grasped =
-        gripper.grasp(kGraspWidth, kGripperSpeed, kGraspForce, kGraspEpsilon, kGraspEpsilon);
-    std::cout << "Grasp " << (grasped ? "succeeded" : "failed") << ", width "
-              << gripper.readOnce().width << " m\n";
+      const bool grasped =
+          gripper.grasp(kGraspWidth, kGripperSpeed, kGraspForce, kGraspEpsilon, kGraspEpsilon);
+      std::cout << "grasp " << (grasped ? "succeeded" : "failed") << ", width "
+                << gripper.readOnce().width << " m\n";
 
-    if (!confirm("vertical up to pre-pick height (supervised)")) return 0;
-    printVertical("up", z_pre_pick,
-                  motion::moveVerticalTo(robot, z_pre_pick, pick_sequence::kVerticalLimits,
-                                         &shared));
+      if (!confirm("vertical up to pre-pick height (supervised)")) return false;
+      z = motion::moveVerticalTo(robot, z_pre_pick, kVerticalLimits, &shared, &log);
+      std::cout << "up done, z error " << (z - z_pre_pick) * 1e3 << " mm\n";
 
-    if (!confirm("S-curve pre-pick -> start (supervised)")) return 0;
-    printJoint("pre-pick -> start",
-               motion::moveJointSCurve(robot, pick_sequence::kStart, pick_sequence::kJointLimits, &shared));
+      if (!confirm("S-curve pre-pick -> start (supervised)")) return false;
+      err = motion::moveJointSCurve(robot, poses::kStart, kJointLimits, &shared, &log);
+      std::cout << "pre-pick -> start done, end error " << err * 1e3 << " mrad\n";
+      return true;
+    };
+    bool completed = false;
+    try {
+      completed = sequence();
+    } catch (...) {
+      done = true;
+      camera.join();
+      throw;
+    }
+    done = true;
+    camera.join();
 
-    camera.stop();
+    // --- Results.
+    const char* const names[] = {"start->pre-pick", "down", "up", "pre-pick->start"};
     std::cout << "\nSupervisor decisions:\n";
-    for (const std::string& e : supervisor.events()) std::cout << "  " << e << "\n";
-    if (supervisor.events().empty()) std::cout << "  (none)\n";
-    writeLog(camera.log(), model, start, supervisor, "robot_slowdown.csv");
-    std::cout << "Wrote robot_slowdown.csv (plot: python3 ../scripts/plot_sim.py "
-                 "robot_slowdown.csv)\n";
+    std::ofstream dec("robot_slowdown_decisions.csv");
+    dec << "segment,t_segment,action,cap_percent\n";
+    for (const supervision::Decision& d : supervisor.decisions()) {
+      std::cout << "  " << names[d.segment_id - 1] << " t=" << d.t_segment << " s: "
+                << (d.slow_down ? "slow down" : "resume") << ", cap " << d.cap_fraction * 100
+                << "%\n";
+      dec << d.segment_id - 1 << "," << d.t_segment << "," << (d.slow_down ? "slow" : "resume")
+          << "," << d.cap_fraction * 100 << "\n";
+    }
 
-    if (confirm("open gripper (release)")) {
+    using Jacobian = Eigen::Matrix<double, 6, 7>;
+    std::ofstream csv("robot_slowdown.csv");
+    csv << std::setprecision(7) << "t,segment,t_segment,ee_speed,v_safe,hand_present,hand_distance";
+    for (const char* name : {"dq", "dq_d"}) {
+      for (int i = 1; i <= 7; ++i) csv << "," << name << i;
+    }
+    csv << "\n";
+    for (size_t k = 0; k < log.size; ++k) {
+      const motion::Tick& r = log.ticks[k];
+      const Jacobian J = Eigen::Map<const Jacobian>(
+          model.zeroJacobian(franka::Frame::kEndEffector, r.q, start.F_T_EE, start.EE_T_K).data());
+      const Eigen::Vector3d v =
+          J.topRows<3>() * Eigen::Map<const Eigen::Matrix<double, 7, 1>>(r.dq.data());
+      const double speed = v.norm();
+      const supervision::HandObservation hand = handAt(r.segment + 1, r.t_segment);
+      csv << r.t << "," << r.segment << "," << r.t_segment << "," << speed << ",";
+      if (speed > 1e-4) csv << supervisor.safeSpeed(r.q, v / speed);  // no direction at rest
+      csv << "," << hand.present << ",";
+      if (hand.present) csv << (eeOf(r.q) - hand.position).norm();
+      for (const scurve::Vec7* v7 : {&r.dq, &r.dq_d}) {
+        for (double x : *v7) csv << "," << x;
+      }
+      csv << "\n";
+    }
+    std::cout << "Wrote robot_slowdown.csv (" << log.size << " ticks"
+              << (log.size == log.ticks.size() ? ", log full" : "")
+              << ") and robot_slowdown_decisions.csv\n"
+              << "Plot: python3 ../scripts/plot_slowdown.py robot_slowdown.csv\n";
+
+    if (completed && confirm("open gripper (release)")) {
       gripper.move(max_width, kGripperSpeed);
     }
   } catch (const std::exception& e) {
