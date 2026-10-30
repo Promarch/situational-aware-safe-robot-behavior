@@ -46,3 +46,6 @@ target_link_libraries(robot_test_slowdown robot_motion Threads::Threads)
 
 add_executable(test_hand_receiver tests/test_hand_receiver.cpp)
 target_link_libraries(test_hand_receiver robot_motion)
+
+add_executable(calibrate_camera tests/calibrate_camera.cpp)
+target_link_libraries(calibrate_camera robot_motion)
