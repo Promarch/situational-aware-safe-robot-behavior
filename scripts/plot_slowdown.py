@@ -6,7 +6,7 @@ Writes two figures next to the log:
                      clearance to the nearest hand's intrusion boundary (< 0: inside)
   <name>_joints.png  measured (solid) and commanded (dashed) velocity of each joint
 Segments are placed back to back on a "motion time" axis (waits between them left out). Gray
-bands mark when a hand is present; vertical lines mark the supervisor's commands from
+bands mark when a hand is seen, pink ones when its position is unknown or the stream is stale; vertical lines mark the supervisor's commands from
 <name>_decisions.csv (red: slow down, green: resume), labelled with the cap in % of nominal.
 
 Usage: plot_slowdown.py LOG.csv
@@ -59,8 +59,11 @@ def decorate(ax, label_segments=False):
             ax.text(off, 1.0, NAMES[seg], transform=ax.get_xaxis_transform(), fontsize=8,
                     va="bottom")
     hand = per_segment(d["hand_present"]) == 1
-    ax.fill_between(x, 0, 1, where=hand, transform=ax.get_xaxis_transform(), color="gray",
-                    alpha=0.2, lw=0)
+    unlocated = per_segment(d["hand_unlocated"]) == 1
+    ax.fill_between(x, 0, 1, where=hand & ~unlocated, transform=ax.get_xaxis_transform(),
+                    color="gray", alpha=0.2, lw=0)
+    ax.fill_between(x, 0, 1, where=unlocated, transform=ax.get_xaxis_transform(),
+                    color="tab:red", alpha=0.12, lw=0)
     if decisions is not None:
         for row in decisions:
             if int(row["segment"]) not in offsets:
@@ -87,7 +90,7 @@ ax_d.plot(x, per_segment(d["hand_clearance"]), color="tab:blue",
           label="EE clearance to the hand (distance − sphere radius − margin)")
 ax_d.axhline(0.0, color="tab:red", ls=":", lw=1, label="intrusion boundary")
 ax_d.set_ylabel("clearance [m]")
-ax_d.set_xlabel("motion time [s]   (gray: hand present; dashed: red slow down, green resume)")
+ax_d.set_xlabel("motion time [s]   (gray: hand; pink: position unknown / stream stale; dashed: red slow down, green resume)")
 ax_d.legend(loc="upper right", fontsize=8)
 decorate(ax_d)
 fig.tight_layout()
@@ -102,7 +105,7 @@ for i, ax in enumerate(axes, start=1):
     ax.set_ylabel(f"dq{i} [rad/s]", fontsize=8)
     decorate(ax, label_segments=i == 1)
 axes[0].legend(loc="upper right", fontsize=8)
-axes[-1].set_xlabel("motion time [s]   (gray: hand present; dashed: red slow down, green resume)")
+axes[-1].set_xlabel("motion time [s]   (gray: hand; pink: position unknown / stream stale; dashed: red slow down, green resume)")
 fig.tight_layout()
 fig.savefig(base + "_joints.png", dpi=90)
 print("saved", base + "_joints.png")

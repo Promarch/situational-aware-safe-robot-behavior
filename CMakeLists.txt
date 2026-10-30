@@ -29,8 +29,8 @@ target_include_directories(s_curve PUBLIC src)
 target_link_libraries(s_curve PUBLIC Franka::Franka)
 
 # Robot motions and hand-aware speed supervision.
-add_library(robot_motion STATIC src/motion.cpp src/supervision.cpp)
-target_link_libraries(robot_motion PUBLIC s_curve examples_common)
+add_library(robot_motion STATIC src/motion.cpp src/supervision.cpp src/hand_receiver.cpp)
+target_link_libraries(robot_motion PUBLIC s_curve examples_common Threads::Threads)
 
 add_executable(read_state src/read_state.cpp)
 target_link_libraries(read_state Franka::Franka)
@@ -43,3 +43,6 @@ target_link_libraries(test_replan s_curve)
 
 add_executable(robot_test_slowdown tests/robot_test_slowdown.cpp)
 target_link_libraries(robot_test_slowdown robot_motion Threads::Threads)
+
+add_executable(test_hand_receiver tests/test_hand_receiver.cpp)
+target_link_libraries(test_hand_receiver robot_motion)

@@ -1,0 +1,11 @@
+# Hand appearances for scripts/replay_hands.py:  t_on,t_off,x,y,z,radius
+#   t_on, t_off  seconds since replay_hands.py started (with --loop: within each period)
+#   x, y, z      sphere center in the robot base frame [m]; nan = hand seen without a position
+#   radius       sphere radius [m] (detector: 0.10 / 0.13 / 0.18)
+#
+# A hand sitting on the joint path between start (EE at 0.000, 0.307, 0.487) and pre-pick
+# (0.560, -0.255, 0.200) for an hour, so the robot slows down every time it passes in either
+# direction.
+0,3600,0.572,0.000,0.280,0.10
+# Hand seen without a usable position (HAND_UNLOCATED), e.g. from 15 s to 17 s:
+# 15,17,nan,nan,nan,0.10

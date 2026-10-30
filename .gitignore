@@ -15,3 +15,5 @@ devel/
 # Logs / data
 *.log
 *.csv
+!config/*.csv
+__pycache__/

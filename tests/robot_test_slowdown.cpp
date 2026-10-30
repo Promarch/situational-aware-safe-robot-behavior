@@ -1,33 +1,28 @@
-// Robot test of the hand-aware slowdown with a virtual hand (no camera yet).
+// Robot test of the hand-aware slowdown with hands received over UDP (hand_udp protocol).
 //
 //   start -joint-> pre-pick, open, -vertical-> grasp height, grasp, -vertical-> pre-pick,
 //   -joint-> start, release.        (start: poses::kStart)
-// The supervisor runs at the camera rate (30 Hz) in its own thread next to libfranka's 1 kHz
-// control loop.
+// HandReceiver's thread runs the supervisor on every received packet, next to libfranka's
+// 1 kHz control loop. Hands come from the detector or from scripts/replay_hands.py; start the
+// sender first: without a stream the receiver reports the hand position as unknown and the
+// robot moves at the energy-limited speed only.
 //
-// Virtual hand: a sphere of radius kHandRadius, like the detector sends (hand_udp protocol). In
-// each of the two joint segments it appears kHandAfterTopSpeed after the nominal motion reaches
-// its top speed, centered on the path where the robot will be kHandLead later (inside the
-// prediction horizon, so the next camera frame triggers the slowdown), and stays kHandDuration.
-// It only exists in software: the robot slows down but nothing is there.
-//
-// Usage: robot_test_slowdown [S_lim in J, default 0.05]
+// Usage: robot_test_slowdown [S_lim in J, default 0.05] [UDP port, default 5005]
 // Writes, then plot with  python3 ../scripts/plot_slowdown.py robot_slowdown.csv
 //   robot_slowdown.csv, one row per control tick:
 //     t, segment (0 start->pre-pick, 1 down, 2 up, 3 pre-pick->start), t_segment,
 //     ee_speed = |J(q) dq| [m/s], v_safe along the motion direction (every tick; empty at rest),
-//     hand_present, hand_clearance (EE distance to the hand's intrusion boundary, sphere radius
-//     + margin; < 0 inside), dq1..dq7 measured,
+//     hand_present (a hand seen, or position unknown), hand_unlocated (position unknown or
+//     stream stale), hand_clearance (EE distance to the nearest located hand's intrusion
+//     boundary, sphere radius + margin; < 0 inside), dq1..dq7 measured,
 //     dq_d1..dq_d7 commanded [rad/s]
 //   robot_slowdown_decisions.csv: segment, t_segment, action (slow/resume), cap_percent
-#include <atomic>
-#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <thread>
+#include <vector>
 
 #include <Eigen/Core>
 #include <franka/exception.h>
@@ -37,6 +32,7 @@
 
 #include "confirm.h"
 #include "examples_common.h"
+#include "hand_receiver.h"
 #include "motion.h"
 #include "poses.h"
 #include "s_curve.h"
@@ -54,22 +50,16 @@ constexpr double kGraspForce = 15.0;    // [N]
 constexpr double kGraspWidth = 0.048;   // test object [m]
 constexpr double kGraspEpsilon = 0.01;  // [m]
 
-constexpr double kFramePeriod = 1.0 / 30.0;  // camera [s]
-constexpr double kHandAfterTopSpeed = 0.2;   // [s]
-constexpr double kHandLead = 0.4;            // [s], < horizon
-constexpr double kHandDuration = 1.0;        // [s]
-constexpr double kHandRadius = 0.10;         // detector's smallest sphere (R_SPHERE_BEST) [m]
-
-struct Hand {
-  uint32_t segment_id;  // 1 start->pre-pick, 4 pre-pick->start
-  double t_on, t_off;   // time since the segment started [s]
-  Eigen::Vector3d center;
+struct Frame {
+  double t;  // TickLog clock [s]
+  supervision::HandObservation hands;
 };
 }  // namespace
 
 int main(int argc, char** argv) {
   supervision::Params params;
   if (argc > 1) params.s_lim = std::atof(argv[1]);
+  const auto port = static_cast<uint16_t>(argc > 2 ? std::atoi(argv[2]) : 5005);
 
   try {
     franka::Robot robot(kRobotIp);
@@ -82,32 +72,9 @@ int main(int argc, char** argv) {
       return Eigen::Vector3d(T[12], T[13], T[14]);
     };
 
-    // --- Virtual hands from the nominal joint segments. A rest-to-rest profile reaches its top
-    // speed at the start of its 4th phase (after jerk up, constant acceleration, jerk down).
-    auto handFor = [&](uint32_t segment_id, const scurve::JointSCurve& nominal) {
-      const double t_top = nominal.sigma().segment(3).t0;
-      const double t_on = t_top + kHandAfterTopSpeed;
-      const Hand h{segment_id, t_on, t_on + kHandDuration, eeOf(nominal.at(t_on + kHandLead).q)};
-      std::cout << "Hand in segment " << segment_id << ": nominal top speed at " << t_top
-                << " s, hand appears at " << t_on << " s on the path at (" << h.center.transpose()
-                << ")\n";
-      return h;
-    };
-    const Hand hands[] = {
-        handFor(1, scurve::JointSCurve(poses::kStart, poses::kPrePickJoints, kJointLimits)),
-        handFor(4, scurve::JointSCurve(poses::kPrePickJoints, poses::kStart, kJointLimits))};
-    auto handAt = [&](uint32_t segment_id, double t_segment) {
-      supervision::HandObservation obs;
-      for (const Hand& h : hands) {
-        if (segment_id == h.segment_id && t_segment >= h.t_on && t_segment < h.t_off) {
-          obs.hands[obs.n_hands++] = {h.center, kHandRadius};
-        }
-      }
-      return obs;
-    };
-    std::cout << "S_lim " << params.s_lim << " J, intrusion radius " << kHandRadius * 100
-              << " + " << params.radius_margin * 100 << " cm, horizon " << params.horizon << " s, hold after slowdown "
-              << params.hold_after_slowdown << " s\n";
+    std::cout << "S_lim " << params.s_lim << " J, intrusion radius: hand sphere + "
+              << params.radius_margin * 100 << " cm, horizon " << params.horizon
+              << " s, hold after slowdown " << params.hold_after_slowdown << " s\n";
 
     // --- Preparation.
     if (gripper.readOnce().max_width < 0.01) {
@@ -133,16 +100,8 @@ int main(int argc, char** argv) {
     supervision::Shared shared;
     supervision::Supervisor supervisor(model, start, params, &shared);
     motion::TickLog log(300000);  // 5 min of control ticks
-    std::atomic<bool> done{false};
-    std::thread camera([&] {
-      auto next = std::chrono::steady_clock::now();
-      while (!done) {
-        const supervision::Snapshot s = shared.snapshot.load();
-        supervisor.onFrame(handAt(s.segment_id, s.t));
-        next += std::chrono::microseconds(static_cast<int>(kFramePeriod * 1e6));
-        std::this_thread::sleep_until(next);
-      }
-    });
+    std::vector<Frame> frames;    // written by the receiver thread, read after it stopped
+    frames.reserve(20000);
 
     auto sequence = [&]() -> bool {
       if (!confirm("S-curve start -> pre-pick (supervised)")) return false;
@@ -174,15 +133,20 @@ int main(int argc, char** argv) {
       return true;
     };
     bool completed = false;
-    try {
+    HandReceiver::Stats rx;
+    {
+      // Stops and joins its thread when leaving this block, also on an exception.
+      HandReceiver receiver(port, [&](const supervision::HandObservation& hands) {
+        frames.push_back({log.now(), hands});
+        supervisor.onFrame(hands);
+      });
+      std::cout << "Listening for hands on UDP port " << port << "\n";
       completed = sequence();
-    } catch (...) {
-      done = true;
-      camera.join();
-      throw;
+      rx = receiver.stats();
     }
-    done = true;
-    camera.join();
+    std::cout << "UDP: " << rx.received << " packets, " << rx.lost << " lost, " << rx.bad
+              << " malformed, " << rx.wrong_frame << " not in the robot base frame, " << rx.stale
+              << " stale frames, last latency " << rx.latency_ms << " ms\n";
 
     // --- Results.
     const char* const names[] = {"start->pre-pick", "down", "up", "pre-pick->start"};
@@ -199,22 +163,26 @@ int main(int argc, char** argv) {
 
     using Jacobian = Eigen::Matrix<double, 6, 7>;
     std::ofstream csv("robot_slowdown.csv");
-    csv << std::setprecision(7) << "t,segment,t_segment,ee_speed,v_safe,hand_present,hand_clearance";
+    csv << std::setprecision(7) << "t,segment,t_segment,ee_speed,v_safe,hand_present,hand_unlocated,hand_clearance";
     for (const char* name : {"dq", "dq_d"}) {
       for (int i = 1; i <= 7; ++i) csv << "," << name << i;
     }
     csv << "\n";
+    size_t f = 0;  // latest camera frame at or before the tick
     for (size_t k = 0; k < log.size; ++k) {
       const motion::Tick& r = log.ticks[k];
+      while (f + 1 < frames.size() && frames[f + 1].t <= r.t) ++f;
+      const supervision::HandObservation hands_now =
+          !frames.empty() && frames[f].t <= r.t ? frames[f].hands : supervision::HandObservation{};
       const Jacobian J = Eigen::Map<const Jacobian>(
           model.zeroJacobian(franka::Frame::kEndEffector, r.q, start.F_T_EE, start.EE_T_K).data());
       const Eigen::Vector3d v =
           J.topRows<3>() * Eigen::Map<const Eigen::Matrix<double, 7, 1>>(r.dq.data());
       const double speed = v.norm();
-      const supervision::HandObservation hands_now = handAt(r.segment + 1, r.t_segment);
       csv << r.t << "," << r.segment << "," << r.t_segment << "," << speed << ",";
       if (speed > 1e-4) csv << supervisor.safeSpeed(r.q, v / speed);  // no direction at rest
-      csv << "," << (hands_now.n_hands > 0) << ",";
+      csv << "," << (hands_now.n_hands > 0 || hands_now.unlocated) << "," << hands_now.unlocated
+          << ",";
       if (hands_now.n_hands > 0) {
         double clearance = INFINITY;
         for (int h = 0; h < hands_now.n_hands; ++h) {
