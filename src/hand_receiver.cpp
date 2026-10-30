@@ -21,8 +21,8 @@ constexpr int kRecvTimeoutUs = 20000;  // recv() wakes up at least every 20 ms
 
 HandReceiver::HandReceiver(uint16_t port,
                            std::function<void(const supervision::HandObservation&)> on_frame,
-                           std::chrono::milliseconds stale_after)
-    : on_frame_(std::move(on_frame)), stale_after_(stale_after) {
+                           std::chrono::milliseconds stale_after, bool accept_any_frame)
+    : on_frame_(std::move(on_frame)), stale_after_(stale_after), accept_any_frame_(accept_any_frame) {
   fd_ = socket(AF_INET, SOCK_DGRAM, 0);
   if (fd_ < 0) {
     throw std::runtime_error("hand receiver: socket(): " + std::string(std::strerror(errno)));
@@ -106,8 +106,8 @@ void HandReceiver::run() {
 
     supervision::HandObservation obs;
     obs.unlocated = (pkg.header.flags & hand_udp::kFlagHandUnlocated) != 0;
-    if (pkg.header.frame_id != hand_udp::kFrameRobotBase) {
-      ++wrong_frame_;
+    if (pkg.header.frame_id != hand_udp::kFrameRobotBase) ++wrong_frame_;
+    if (pkg.header.frame_id != hand_udp::kFrameRobotBase && !accept_any_frame_) {
       obs.unlocated = pkg.n_hands > 0;  // positions we cannot use
     } else {
       for (int h = 0; h < pkg.n_hands && h < supervision::kMaxHands; ++h) {

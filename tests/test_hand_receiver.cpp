@@ -1,10 +1,13 @@
 // UDP reception test without the robot: listens for the hand stream and prints once per second
 // what arrived. Run the sender (scripts/replay_hands.py or the real detector) next to it.
 //
-// Usage: test_hand_receiver [port=5005] [seconds=20]
+// Usage: test_hand_receiver [port=5005] [seconds=20] [--any-frame]
+//   --any-frame  also show hands sent in the camera frame (detector without extrinsic
+//                calibration); the robot programs never accept those
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <thread>
 
@@ -13,16 +16,21 @@
 int main(int argc, char** argv) {
   const auto port = static_cast<uint16_t>(argc > 1 ? std::atoi(argv[1]) : 5005);
   const int seconds = argc > 2 ? std::atoi(argv[2]) : 20;
+  const bool any_frame = argc > 3 && std::strcmp(argv[3], "--any-frame") == 0;
 
   std::mutex mutex;
   supervision::HandObservation last;
   uint64_t frames = 0;
-  HandReceiver receiver(port, [&](const supervision::HandObservation& obs) {
-    std::lock_guard<std::mutex> lock(mutex);
-    last = obs;
-    ++frames;
-  });
-  std::printf("listening on UDP port %u for %d s\n", port, seconds);
+  HandReceiver receiver(
+      port,
+      [&](const supervision::HandObservation& obs) {
+        std::lock_guard<std::mutex> lock(mutex);
+        last = obs;
+        ++frames;
+      },
+      std::chrono::milliseconds(100), any_frame);
+  std::printf("listening on UDP port %u for %d s%s\n", port, seconds,
+              any_frame ? " (accepting camera-frame positions)" : "");
 
   for (int s = 1; s <= seconds; ++s) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
