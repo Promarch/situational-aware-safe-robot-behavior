@@ -55,7 +55,7 @@ constexpr double kGraspEpsilon = 0.01;  // [m]
 constexpr double kFramePeriod = 1.0 / 30.0;  // camera [s]
 constexpr double kHandAfterTopSpeed = 0.2;   // [s]
 constexpr double kHandLead = 0.4;            // [s], < horizon
-constexpr double kHandDuration = 3.0;        // [s]
+constexpr double kHandDuration = 1.0;        // [s]
 
 struct Hand {
   uint32_t segment_id;  // 1 start->pre-pick, 4 pre-pick->start
