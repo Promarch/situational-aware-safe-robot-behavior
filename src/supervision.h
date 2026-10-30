@@ -2,7 +2,8 @@
 //
 // The 1 kHz control loop publishes a Snapshot of the running segment every tick. The supervisor
 // runs in its own thread, once per camera frame: it predicts the EE positions over the next
-// `horizon` from the snapshot, and if one comes within `radius` of the hand it computes the
+// `horizon` from the snapshot, and if one comes within any hand's sphere radius plus
+// `radius_margin` of that hand's center (or a hand is seen without a position) it computes the
 // highest speed at which every predicted point satisfies the energy limit
 //   v_safe = sqrt(2 * S_lim / m_eff),  m_eff = 1 / (u^T [J M^-1 J^T]_pos u),
 // u being the EE motion direction there. It sends that cap once and looks again only after the
@@ -55,14 +56,28 @@ struct Shared {
 struct Params {
   double horizon = 0.5;   // prediction horizon [s]
   double sample_dt = 0.01;
-  double radius = 0.05;   // intrusion distance between a predicted EE point and the hand [m]
+  // A hand intrudes when a predicted EE point is closer to its sphere center than the sphere
+  // radius sent by the detector plus this margin [m].
+  double radius_margin = 0.01;
   double s_lim = 0.05;    // transferable energy limit [J]
   double hold_after_slowdown = 0.3;  // no detection for this long once a slowdown is done [s]
 };
 
+// Hands of one camera frame, as the detector sends them (hand_udp protocol, udp-implementation
+// branch): each hand is a sphere in the robot base frame.
+constexpr int kMaxHands = 6;  // hand_udp::kMaxHands
+
+struct HandSphere {
+  Eigen::Vector3d center = Eigen::Vector3d::Zero();  // [m]
+  double radius = 0.0;                               // [m]
+};
+
 struct HandObservation {
-  bool present = false;
-  Eigen::Vector3d position = Eigen::Vector3d::Zero();  // base frame [m]
+  int n_hands = 0;
+  std::array<HandSphere, kMaxHands> hands{};
+  // A hand was seen but has no usable 3D position (protocol flag HAND_UNLOCATED): its position
+  // is unknown, so it is treated as intruding.
+  bool unlocated = false;
 };
 
 // One command sent by the supervisor.
@@ -80,7 +95,7 @@ class Supervisor {
              Shared* shared);
 
   // Handles one camera frame.
-  void onFrame(const HandObservation& hand);
+  void onFrame(const HandObservation& hands);
 
   // Energy-limited EE speed at configuration q when moving in direction u (unit, base frame).
   double safeSpeed(const scurve::Vec7& q, const Eigen::Vector3d& u) const;
@@ -94,7 +109,7 @@ class Supervisor {
   // Joint velocity moving the EE vertically at 1 m/s (+1 up, -1 down) without rotating.
   Eigen::Matrix<double, 7, 1> verticalJointRate(const scurve::Vec7& q, double direction) const;
   // Speed cap in the snapshot's units; sets *intrusion.
-  double evaluate(const Snapshot& s, const Eigen::Vector3d& hand, bool* intrusion) const;
+  double evaluate(const Snapshot& s, const HandObservation& hands, bool* intrusion) const;
   void send(const Snapshot& s, double cap);
 
   const franka::Model& model_;

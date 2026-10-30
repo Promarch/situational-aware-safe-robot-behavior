@@ -43,7 +43,7 @@ Eigen::Matrix<double, 7, 1> Supervisor::verticalJointRate(const scurve::Vec7& q,
              .solve(twist);
 }
 
-double Supervisor::evaluate(const Snapshot& s, const Eigen::Vector3d& hand,
+double Supervisor::evaluate(const Snapshot& s, const HandObservation& hands,
                             bool* intrusion) const {
   // Joints at the predicted path parameter (sigma or vertical distance) over the horizon.
   // Joint segment: on the straight joint line. Vertical segment: follow the line from the
@@ -66,10 +66,16 @@ double Supervisor::evaluate(const Snapshot& s, const Eigen::Vector3d& hand,
     qs.push_back(q);
   }
 
-  *intrusion = std::any_of(qs.begin(), qs.end(), [&](const scurve::Vec7& qk) {
+  // Every hand against every predicted EE point, each with its own sphere radius.
+  *intrusion = hands.unlocated || std::any_of(qs.begin(), qs.end(), [&](const scurve::Vec7& qk) {
     const std::array<double, 16> T =
         model_.pose(franka::Frame::kEndEffector, qk, state_.F_T_EE, state_.EE_T_K);
-    return (Eigen::Vector3d(T[12], T[13], T[14]) - hand).norm() < params_.radius;
+    const Eigen::Vector3d p(T[12], T[13], T[14]);
+    for (int h = 0; h < hands.n_hands; ++h) {
+      const HandSphere& hand = hands.hands[h];
+      if ((p - hand.center).norm() < hand.radius + params_.radius_margin) return true;
+    }
+    return false;
   });
   if (!*intrusion) {
     return s.nominal;
@@ -102,7 +108,7 @@ void Supervisor::send(const Snapshot& s, double cap) {
   decisions_.push_back({s.segment_id, s.t, holding_, cap / s.nominal});
 }
 
-void Supervisor::onFrame(const HandObservation& hand) {
+void Supervisor::onFrame(const HandObservation& hands) {
   const Snapshot s = shared_->snapshot.load();
   if (s.segment_id == 0) {
     return;  // between segments
@@ -125,7 +131,8 @@ void Supervisor::onFrame(const HandObservation& hand) {
   }
 
   bool intrusion = false;
-  const double cap = hand.present ? evaluate(s, hand.position, &intrusion) : s.nominal;
+  const bool any_hand = hands.n_hands > 0 || hands.unlocated;
+  const double cap = any_hand ? evaluate(s, hands, &intrusion) : s.nominal;
   const double eps = 1e-6 * s.nominal;
   if (intrusion && cap < s.cap - eps) {
     send(s, cap);  // slow down

@@ -5,17 +5,19 @@
 // The supervisor runs at the camera rate (30 Hz) in its own thread next to libfranka's 1 kHz
 // control loop.
 //
-// Virtual hand: in each of the two joint segments it appears kHandAfterTopSpeed after the
-// nominal motion reaches its top speed, on the path where the robot will be kHandLead later
-// (inside the prediction horizon, so the next camera frame triggers the slowdown), and stays
-// kHandDuration. It only exists in software: the robot slows down but nothing is there.
+// Virtual hand: a sphere of radius kHandRadius, like the detector sends (hand_udp protocol). In
+// each of the two joint segments it appears kHandAfterTopSpeed after the nominal motion reaches
+// its top speed, centered on the path where the robot will be kHandLead later (inside the
+// prediction horizon, so the next camera frame triggers the slowdown), and stays kHandDuration.
+// It only exists in software: the robot slows down but nothing is there.
 //
 // Usage: robot_test_slowdown [S_lim in J, default 0.05]
 // Writes, then plot with  python3 ../scripts/plot_slowdown.py robot_slowdown.csv
 //   robot_slowdown.csv, one row per control tick:
 //     t, segment (0 start->pre-pick, 1 down, 2 up, 3 pre-pick->start), t_segment,
 //     ee_speed = |J(q) dq| [m/s], v_safe along the motion direction (every tick; empty at rest),
-//     hand_present, hand_distance (EE to hand, while present), dq1..dq7 measured,
+//     hand_present, hand_clearance (EE distance to the hand's intrusion boundary, sphere radius
+//     + margin; < 0 inside), dq1..dq7 measured,
 //     dq_d1..dq_d7 commanded [rad/s]
 //   robot_slowdown_decisions.csv: segment, t_segment, action (slow/resume), cap_percent
 #include <atomic>
@@ -56,11 +58,12 @@ constexpr double kFramePeriod = 1.0 / 30.0;  // camera [s]
 constexpr double kHandAfterTopSpeed = 0.2;   // [s]
 constexpr double kHandLead = 0.4;            // [s], < horizon
 constexpr double kHandDuration = 1.0;        // [s]
+constexpr double kHandRadius = 0.10;         // detector's smallest sphere (R_SPHERE_BEST) [m]
 
 struct Hand {
   uint32_t segment_id;  // 1 start->pre-pick, 4 pre-pick->start
   double t_on, t_off;   // time since the segment started [s]
-  Eigen::Vector3d position;
+  Eigen::Vector3d center;
 };
 }  // namespace
 
@@ -86,7 +89,7 @@ int main(int argc, char** argv) {
       const double t_on = t_top + kHandAfterTopSpeed;
       const Hand h{segment_id, t_on, t_on + kHandDuration, eeOf(nominal.at(t_on + kHandLead).q)};
       std::cout << "Hand in segment " << segment_id << ": nominal top speed at " << t_top
-                << " s, hand appears at " << t_on << " s on the path at (" << h.position.transpose()
+                << " s, hand appears at " << t_on << " s on the path at (" << h.center.transpose()
                 << ")\n";
       return h;
     };
@@ -97,13 +100,13 @@ int main(int argc, char** argv) {
       supervision::HandObservation obs;
       for (const Hand& h : hands) {
         if (segment_id == h.segment_id && t_segment >= h.t_on && t_segment < h.t_off) {
-          obs = {true, h.position};
+          obs.hands[obs.n_hands++] = {h.center, kHandRadius};
         }
       }
       return obs;
     };
-    std::cout << "S_lim " << params.s_lim << " J, radius " << params.radius * 100
-              << " cm, horizon " << params.horizon << " s, hold after slowdown "
+    std::cout << "S_lim " << params.s_lim << " J, intrusion radius " << kHandRadius * 100
+              << " + " << params.radius_margin * 100 << " cm, horizon " << params.horizon << " s, hold after slowdown "
               << params.hold_after_slowdown << " s\n";
 
     // --- Preparation.
@@ -196,7 +199,7 @@ int main(int argc, char** argv) {
 
     using Jacobian = Eigen::Matrix<double, 6, 7>;
     std::ofstream csv("robot_slowdown.csv");
-    csv << std::setprecision(7) << "t,segment,t_segment,ee_speed,v_safe,hand_present,hand_distance";
+    csv << std::setprecision(7) << "t,segment,t_segment,ee_speed,v_safe,hand_present,hand_clearance";
     for (const char* name : {"dq", "dq_d"}) {
       for (int i = 1; i <= 7; ++i) csv << "," << name << i;
     }
@@ -208,11 +211,19 @@ int main(int argc, char** argv) {
       const Eigen::Vector3d v =
           J.topRows<3>() * Eigen::Map<const Eigen::Matrix<double, 7, 1>>(r.dq.data());
       const double speed = v.norm();
-      const supervision::HandObservation hand = handAt(r.segment + 1, r.t_segment);
+      const supervision::HandObservation hands_now = handAt(r.segment + 1, r.t_segment);
       csv << r.t << "," << r.segment << "," << r.t_segment << "," << speed << ",";
       if (speed > 1e-4) csv << supervisor.safeSpeed(r.q, v / speed);  // no direction at rest
-      csv << "," << hand.present << ",";
-      if (hand.present) csv << (eeOf(r.q) - hand.position).norm();
+      csv << "," << (hands_now.n_hands > 0) << ",";
+      if (hands_now.n_hands > 0) {
+        double clearance = INFINITY;
+        for (int h = 0; h < hands_now.n_hands; ++h) {
+          const supervision::HandSphere& hand = hands_now.hands[h];
+          clearance = std::min(clearance, (eeOf(r.q) - hand.center).norm() - hand.radius -
+                                              params.radius_margin);
+        }
+        csv << clearance;
+      }
       for (const scurve::Vec7* v7 : {&r.dq, &r.dq_d}) {
         for (double x : *v7) csv << "," << x;
       }

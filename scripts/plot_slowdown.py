@@ -2,7 +2,8 @@
 """Plot robot_slowdown.csv from robot_test_slowdown (format in tests/robot_test_slowdown.cpp).
 
 Writes two figures next to the log:
-  <name>_speed.png   EE speed and energy-limited speed v_safe (every tick), EE-hand distance
+  <name>_speed.png   EE speed and energy-limited speed v_safe (every tick), and the EE's
+                     clearance to the nearest hand's intrusion boundary (< 0: inside)
   <name>_joints.png  measured (solid) and commanded (dashed) velocity of each joint
 Segments are placed back to back on a "motion time" axis (waits between them left out). Gray
 bands mark when a hand is present; vertical lines mark the supervisor's commands from
@@ -19,7 +20,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-RADIUS = 0.05
 GAP = 0.3  # [s] between segments on the motion-time axis
 NAMES = ["start->pre-pick", "down", "up", "pre-pick->start"]
 
@@ -83,9 +83,10 @@ ax_v.plot(x, per_segment(d["v_safe"]), color="tab:red", lw=1,
 ax_v.set_ylabel("speed [m/s]")
 ax_v.legend(loc="upper right", fontsize=8)
 decorate(ax_v, label_segments=True)
-ax_d.plot(x, per_segment(d["hand_distance"]), color="tab:blue", label="EE–hand distance")
-ax_d.axhline(RADIUS, color="tab:red", ls=":", lw=1, label=f"radius {RADIUS * 100:.0f} cm")
-ax_d.set_ylabel("distance [m]")
+ax_d.plot(x, per_segment(d["hand_clearance"]), color="tab:blue",
+          label="EE clearance to the hand (distance − sphere radius − margin)")
+ax_d.axhline(0.0, color="tab:red", ls=":", lw=1, label="intrusion boundary")
+ax_d.set_ylabel("clearance [m]")
 ax_d.set_xlabel("motion time [s]   (gray: hand present; dashed: red slow down, green resume)")
 ax_d.legend(loc="upper right", fontsize=8)
 decorate(ax_d)
