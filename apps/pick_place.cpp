@@ -16,7 +16,8 @@
 //   pick_place.csv, one row per control tick:
 //     t, segment (0..6, see kSegmentNames), t_segment,
 //     ee_speed = |J(q) dq| of the reference point [m/s], v_safe there along its motion
-//     direction (every tick; empty at rest), hand_present (a hand seen, or position unknown),
+//     direction, m_eff = effective mass there along that direction [kg] (v_safe =
+//     sqrt(2 S_lim / m_eff); both empty at rest), hand_present (a hand seen, or position unknown),
 //     hand_unlocated (position unknown or stream stale), hand_clearance (reference point to the
 //     nearest located hand's intrusion boundary, sphere radius + margin; < 0 inside),
 //     dq1..dq7 measured, dq_d1..dq_d7 commanded [rad/s], tau_ext1..tau_ext7 estimated external
@@ -138,11 +139,13 @@ int main(int argc, char** argv) {
       return 1;
     }
 
-    if (!confirm("pick and place: home the gripper if needed, return to start, run the whole task")) {
+    if (!confirm("pick and place: home the gripper if needed, return to start, run the task")) {
       return 0;
     }
-    // Rejected while the user stop is pressed, so only set right before moving. The same
-    // thresholds apply during acceleration and at constant speed.
+    // Leave a reflex from a previous run first: in reflex mode the robot rejects the commands
+    // below. They are also rejected while the user stop is pressed, so only set right before
+    // moving. The same thresholds apply during acceleration and at constant speed.
+    robot.automaticErrorRecovery();
     robot.setCollisionBehavior(kLowerTorque, kUpperTorque, kLowerTorque, kUpperTorque,
                                kLowerForce, kUpperForce, kLowerForce, kUpperForce);
     robot.setJointImpedance(kJointImpedance);
@@ -219,7 +222,15 @@ int main(int argc, char** argv) {
         supervisor.onFrame(hands);
       });
       std::cout << "Listening for hands on UDP port " << port << "\n";
-      completed = task();
+      try {
+        completed = task();
+      } catch (const franka::ControlException& e) {
+        // A reflex (e.g. a collision) aborted the motion: recover so the robot is ready again,
+        // and still write the log below, which is when it matters most.
+        std::cerr << "\nMOTION ABORTED: " << e.what() << "\n";
+        robot.automaticErrorRecovery();
+        std::cerr << "automatic error recovery done\n";
+      }
       rx = receiver.stats();
     }
     std::cout << (completed ? "Task completed.\n" : "Task NOT completed.\n") << "UDP: "
@@ -242,11 +253,15 @@ int main(int argc, char** argv) {
     using Jacobian = Eigen::Matrix<double, 6, 7>;
     std::ofstream csv("pick_place.csv");
     csv << std::setprecision(7)
-        << "t,segment,t_segment,ee_speed,v_safe,hand_present,hand_unlocated,hand_clearance";
+        << "t,segment,t_segment,ee_speed,v_safe,m_eff,hand_present,hand_unlocated,hand_clearance";
     for (const char* name : {"dq", "dq_d", "tau_ext"}) {
       for (int i = 1; i <= 7; ++i) csv << "," << name << i;
     }
     csv << "\n";
+    constexpr int kNumSegments = sizeof(kSegmentNames) / sizeof(kSegmentNames[0]);
+    std::array<double, kNumSegments> m_eff_min, m_eff_max;  // per segment, for the summary
+    m_eff_min.fill(INFINITY);
+    m_eff_max.fill(0.0);
     size_t f = 0;  // latest camera frame at or before the tick
     for (size_t k = 0; k < log.size; ++k) {
       const motion::Tick& r = log.ticks[k];
@@ -262,7 +277,17 @@ int main(int argc, char** argv) {
           J.topRows<3>() * Eigen::Map<const Eigen::Matrix<double, 7, 1>>(r.dq.data());
       const double speed = v.norm();
       csv << r.t << "," << r.segment << "," << r.t_segment << "," << speed << ",";
-      if (speed > 1e-4) csv << supervisor.safeSpeed(r.q, v / speed, at_tip);  // none at rest
+      if (speed > 1e-4) {  // no motion direction at rest
+        const Eigen::Vector3d u = v / speed;
+        const double m_eff = supervisor.effectiveMass(r.q, u, at_tip);
+        csv << supervisor.safeSpeed(r.q, u, at_tip) << "," << m_eff;
+        if (r.segment >= 0 && r.segment < kNumSegments && speed > 0.01) {  // skip near-rest noise
+          m_eff_min[r.segment] = std::min(m_eff_min[r.segment], m_eff);
+          m_eff_max[r.segment] = std::max(m_eff_max[r.segment], m_eff);
+        }
+      } else {
+        csv << ",";
+      }
       csv << "," << (hands_now.n_hands > 0 || hands_now.unlocated) << "," << hands_now.unlocated
           << ",";
       if (hands_now.n_hands > 0) {
@@ -282,6 +307,14 @@ int main(int argc, char** argv) {
       }
       csv << "\n";
     }
+    std::cout << "\nEffective mass at the reference point along its motion (above 1 cm/s) [kg]:\n";
+    for (int seg = 0; seg < kNumSegments; ++seg) {
+      if (m_eff_max[seg] > 0.0) {
+        std::cout << "  " << kSegmentNames[seg] << ": " << std::setprecision(3) << m_eff_min[seg]
+                  << " .. " << m_eff_max[seg] << "\n";
+      }
+    }
+
     // Collision thresholds: what normal motion needed.
     std::array<double, 7> tau_max{};
     for (size_t k = 0; k < log.size; ++k) {

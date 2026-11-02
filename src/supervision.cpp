@@ -30,15 +30,18 @@ Supervisor::Jacobian Supervisor::jacobian(const scurve::Vec7& q, bool at_object_
                                         .data());
 }
 
-double Supervisor::safeSpeed(const scurve::Vec7& q, const Eigen::Vector3d& u,
-                             bool at_object_tip) const {
+double Supervisor::effectiveMass(const scurve::Vec7& q, const Eigen::Vector3d& u,
+                                 bool at_object_tip) const {
   const Jacobian J = jacobian(q, at_object_tip);
   const Matrix7 M = Eigen::Map<const Matrix7>(
       model_.mass(q, state_.I_total, state_.m_total, state_.F_x_Ctotal).data());
   const Eigen::Matrix<double, 6, 6> cartesian_mass_inverse = J * M.inverse() * J.transpose();
-  const double effective_mass =
-      1.0 / (u.transpose() * cartesian_mass_inverse.topLeftCorner<3, 3>() * u);
-  return std::sqrt(2.0 * params_.s_lim / effective_mass);
+  return 1.0 / (u.transpose() * cartesian_mass_inverse.topLeftCorner<3, 3>() * u);
+}
+
+double Supervisor::safeSpeed(const scurve::Vec7& q, const Eigen::Vector3d& u,
+                             bool at_object_tip) const {
+  return std::sqrt(2.0 * params_.s_lim / effectiveMass(q, u, at_object_tip));
 }
 
 Eigen::Matrix<double, 7, 1> Supervisor::verticalJointRate(const scurve::Vec7& q,

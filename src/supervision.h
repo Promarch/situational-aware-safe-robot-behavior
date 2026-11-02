@@ -62,12 +62,12 @@ struct Params {
   double sample_dt = 0.01;
   // A hand intrudes when a predicted reference point is closer to its sphere center than the
   // sphere radius sent by the detector plus this margin [m].
-  double radius_margin = 0.10;
+  double radius_margin = 0.20;
   // While an object is held, the reference point for the intrusion test and the energy limit is
   // its far end, at this position in the EE frame (fingertip center; x, y, z along the EE's own
   // axes) [m]. Otherwise it is the EE itself.
   Eigen::Vector3d object_tip = Eigen::Vector3d::Zero();
-  double s_lim = 0.05;    // transferable energy limit [J]
+  double s_lim = 0.01;    // transferable energy limit [J]
   double hold_after_slowdown = 0.3;  // no detection for this long once a slowdown is done [s]
 };
 
@@ -104,6 +104,10 @@ class Supervisor {
 
   // Handles one camera frame.
   void onFrame(const HandObservation& hands);
+
+  // Effective (reflected) mass of the robot at the reference point in direction u (unit, base
+  // frame): m_eff = 1 / (u^T [J M^-1 J^T]_pos u), J and M from libfranka's model at q [kg].
+  double effectiveMass(const scurve::Vec7& q, const Eigen::Vector3d& u, bool at_object_tip) const;
 
   // Energy-limited speed of the reference point (the object's far end if `at_object_tip`, else
   // the EE) at configuration q when moving in direction u (unit, base frame).
