@@ -62,7 +62,7 @@ struct Params {
   double sample_dt = 0.01;
   // A hand intrudes when a predicted reference point is closer to its sphere center than the
   // sphere radius sent by the detector plus this margin [m].
-  double radius_margin = 0.01;
+  double radius_margin = 0.10;
   // While an object is held, the reference point for the intrusion test and the energy limit is
   // its far end, at this position in the EE frame (fingertip center; x, y, z along the EE's own
   // axes) [m]. Otherwise it is the EE itself.

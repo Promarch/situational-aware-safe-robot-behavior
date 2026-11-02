@@ -63,8 +63,10 @@ constexpr double kMinTipClearance = 0.01;    // tip above the table when release
 // defaults are 20 Nm / 20 N). Above an "upper" threshold the robot stops with a reflex; the
 // "lower" ones only raise the contact flags. As sensitive as normal motion allows: after a run
 // the program prints the largest estimated external torque per joint and suggests thresholds.
-constexpr std::array<double, 7> kUpperTorque = {{10.0, 10.0, 9.0, 9.0, 8.0, 7.0, 6.0}};  // [Nm]
-constexpr std::array<double, 7> kLowerTorque = {{5.0, 5.0, 4.5, 4.5, 4.0, 3.5, 3.0}};   // [Nm]
+// Joint thresholds: 1.5 x the largest |tau_ext| of a complete run at full speed (2026-11-02:
+// 1.86 3.08 1.52 1.58 0.63 1.15 0.50 Nm), rounded up to 0.5 Nm.
+constexpr std::array<double, 7> kUpperTorque = {{3.0, 5.0, 2.5, 2.5, 1.0, 2.0, 1.0}};  // [Nm]
+constexpr std::array<double, 7> kLowerTorque = {{1.5, 2.5, 1.5, 1.5, 0.5, 1.0, 0.5}};  // [Nm]
 constexpr std::array<double, 6> kUpperForce = {{10.0, 10.0, 10.0, 10.0, 10.0, 10.0}};   // [N, Nm]
 constexpr std::array<double, 6> kLowerForce = {{5.0, 5.0, 5.0, 5.0, 5.0, 5.0}};         // [N, Nm]
 constexpr double kSuggestedMargin = 1.5;  // suggested threshold = largest torque seen * margin

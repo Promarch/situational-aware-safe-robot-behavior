@@ -9,7 +9,7 @@ approaches its path. Hands come over UDP from the RealSense/MediaPipe detector o
 - **Motion**: joint-space S-curves in the air (all joints share one jerk-limited profile, so the
   path is a straight line in joint space), vertical Cartesian moves near the table.
 - **Supervision**: for every camera frame, the EE positions over the next 0.5 s are predicted
-  with the robot model. If one comes closer to a hand than its sphere radius + 1 cm, the speed is
+  with the robot model. If one comes closer to a hand than its sphere radius + 10 cm, the speed is
   capped so that every predicted point satisfies the energy limit
   `v_safe = sqrt(2 S_lim / m_eff)`, `m_eff` being the effective mass in the motion direction.
 - **Re-planning**: the 1 kHz control loop applies a cap by re-planning its S-curve from its own
