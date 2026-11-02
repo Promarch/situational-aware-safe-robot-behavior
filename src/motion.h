@@ -53,4 +53,10 @@ double moveJointSCurve(franka::Robot& robot, const scurve::Vec7& q_goal,
 double moveVerticalTo(franka::Robot& robot, double z_target, const CartesianLimits& limits,
                       supervision::Shared* shared = nullptr, TickLog* log = nullptr);
 
+// EE motion to an absolute pose through the Cartesian pose interface (the robot solves IK):
+// straight-line position and slerp orientation, both driven by one S-curve. Not supervised.
+// Returns the duration [s].
+double moveCartesianPoseTo(franka::Robot& robot, const std::array<double, 16>& O_T_target,
+                           const CartesianLimits& translation, const CartesianLimits& rotation);
+
 }  // namespace motion

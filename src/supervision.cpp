@@ -15,15 +15,24 @@ constexpr double kLineStep = 2e-3;  // resolved-rate step along a vertical line 
 
 Supervisor::Supervisor(const franka::Model& model, const franka::RobotState& state,
                        const Params& params, Shared* shared)
-    : model_(model), state_(state), params_(params), shared_(shared) {}
-
-Supervisor::Jacobian Supervisor::jacobian(const scurve::Vec7& q) const {
-  return Eigen::Map<const Jacobian>(
-      model_.zeroJacobian(franka::Frame::kEndEffector, q, state_.F_T_EE, state_.EE_T_K).data());
+    : model_(model), state_(state), params_(params), shared_(shared) {
+  // F_T_tip = F_T_EE * translation(0, 0, offset): offset along the EE's own z axis.
+  Eigen::Matrix4d F_T_tip = Eigen::Matrix4d::Map(state.F_T_EE.data());
+  F_T_tip.block<3, 1>(0, 3) += F_T_tip.block<3, 1>(0, 2) * params.object_tip_offset;
+  Eigen::Matrix4d::Map(F_T_tip_.data()) = F_T_tip;
 }
 
-double Supervisor::safeSpeed(const scurve::Vec7& q, const Eigen::Vector3d& u) const {
-  const Jacobian J = jacobian(q);
+Supervisor::Jacobian Supervisor::jacobian(const scurve::Vec7& q, bool at_object_tip) const {
+  return Eigen::Map<const Jacobian>(model_
+                                        .zeroJacobian(franka::Frame::kEndEffector, q,
+                                                      flangeToReference(at_object_tip),
+                                                      state_.EE_T_K)
+                                        .data());
+}
+
+double Supervisor::safeSpeed(const scurve::Vec7& q, const Eigen::Vector3d& u,
+                             bool at_object_tip) const {
+  const Jacobian J = jacobian(q, at_object_tip);
   const Matrix7 M = Eigen::Map<const Matrix7>(
       model_.mass(q, state_.I_total, state_.m_total, state_.F_x_Ctotal).data());
   const Eigen::Matrix<double, 6, 6> cartesian_mass_inverse = J * M.inverse() * J.transpose();
@@ -34,7 +43,7 @@ double Supervisor::safeSpeed(const scurve::Vec7& q, const Eigen::Vector3d& u) co
 
 Eigen::Matrix<double, 7, 1> Supervisor::verticalJointRate(const scurve::Vec7& q,
                                                           double direction) const {
-  const Jacobian J = jacobian(q);
+  const Jacobian J = jacobian(q, false);  // the EE is the frame the robot moves vertically
   Eigen::Matrix<double, 6, 1> twist = Eigen::Matrix<double, 6, 1>::Zero();
   twist[2] = direction;
   return J.transpose() *
@@ -66,10 +75,13 @@ double Supervisor::evaluate(const Snapshot& s, const HandObservation& hands,
     qs.push_back(q);
   }
 
-  // Every hand against every predicted EE point, each with its own sphere radius.
+  // Reference point: the held object's far end, else the EE.
+  const bool at_tip = shared_->holding_object.load();
+
+  // Every hand against every predicted reference point, each with its own sphere radius.
   *intrusion = hands.unlocated || std::any_of(qs.begin(), qs.end(), [&](const scurve::Vec7& qk) {
-    const std::array<double, 16> T =
-        model_.pose(franka::Frame::kEndEffector, qk, state_.F_T_EE, state_.EE_T_K);
+    const std::array<double, 16> T = model_.pose(franka::Frame::kEndEffector, qk,
+                                                 flangeToReference(at_tip), state_.EE_T_K);
     const Eigen::Vector3d p(T[12], T[13], T[14]);
     for (int h = 0; h < hands.n_hands; ++h) {
       const HandSphere& hand = hands.hands[h];
@@ -81,17 +93,19 @@ double Supervisor::evaluate(const Snapshot& s, const HandObservation& hands,
     return s.nominal;
   }
 
-  // EE velocity per unit of the segment's speed variable at each predicted pose: J * delta for a
-  // joint segment, J * (joint rate for a unit vertical velocity) for a vertical one. The cap is
-  // the highest speed at which every predicted point stays under its energy-limited speed.
+  // Reference point velocity per unit of the segment's speed variable at each predicted pose:
+  // J * delta for a joint segment, J * (joint rate for a unit vertical velocity) for a vertical
+  // one. The cap is the highest speed at which every predicted point stays under its
+  // energy-limited speed.
   double cap = s.nominal;
   const Eigen::Map<const Eigen::Matrix<double, 7, 1>> delta(s.delta.data());
   for (const scurve::Vec7& qk : qs) {
     const Eigen::Vector3d v_per_unit =
-        jacobian(qk).topRows<3>() * (s.vertical ? verticalJointRate(qk, s.direction) : delta);
+        jacobian(qk, at_tip).topRows<3>() *
+        (s.vertical ? verticalJointRate(qk, s.direction) : delta);
     const double gain = v_per_unit.norm();
     if (gain > 1e-9) {
-      cap = std::min(cap, safeSpeed(qk, v_per_unit / gain) / gain);
+      cap = std::min(cap, safeSpeed(qk, v_per_unit / gain, at_tip) / gain);
     }
   }
   return cap;

@@ -21,10 +21,18 @@ constexpr JointPose kStart = {{M_PI_2, -M_PI_4, 0, -3 * M_PI_4, 0, M_PI_2, M_PI_
 constexpr JointPose kPrePickJoints = {
     {-0.035886, 0.377146, -0.416845, -1.943431, 0.197729, 2.280601, 1.799564}};
 
+// Above the place point (the pen holder): tool axis straight down, rotated 90 deg about it
+// relative to the pick orientation. NaN until recorded with:  record_pose kPrePlaceJoints
+constexpr JointPose kPrePlaceJoints = {{NAN, NAN, NAN, NAN, NAN, NAN, NAN}};
+
 // Height of the table surface in the base frame [m].
 constexpr double kTableZ = 0.0;
 
 // EE (fingertip center) above the table when grasping [m].
 constexpr double kGraspHeight = 0.02;
+
+// EE (fingertip center) above the table when releasing the object into the holder [m].
+// NaN until measured.
+constexpr double kPlaceHeight = NAN;
 
 }  // namespace poses

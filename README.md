@@ -27,7 +27,8 @@ approaches its path. Hands come over UDP from the RealSense/MediaPipe detector o
 | `src/hand_receiver.*` | UDP receiver thread with the protocol's fail-safe rules |
 | `src/hand_udp_protocol.hpp` | wire format, copied from `udp-implementation` |
 | `src/seqlock.h`, `src/poses.h`, `src/confirm.h` | thread handoff, fixed poses, operator prompt |
-| `apps/robot_test_slowdown.cpp` | supervised pick sequence on the robot |
+| `apps/pick_place.cpp` | the supervised pick and place task |
+| `apps/record_pose.cpp` | record a joint pose with the tool snapped to straight down |
 | `apps/calibrate_camera.cpp` | camera extrinsic `T_base_cam` from hand/EE point pairs |
 | `apps/test_hand_receiver.cpp` | UDP reception check without the robot |
 | `apps/read_state.cpp` | print robot and gripper state |
@@ -50,6 +51,6 @@ mkdir build && cd build && cmake .. && make -j4
 uv run --python 3.12 python python_udp/hand_detect_udp.py --no-gui \
     --extrinsic <this repo>/config/T_base_cam.txt
 # or, without a camera:  python3 scripts/replay_hands.py config/hands_replay.csv
-cd build && ./robot_test_slowdown [S_lim]
-python3 ../scripts/plot_slowdown.py robot_slowdown.csv
+cd build && ./pick_place [S_lim]
+python3 ../scripts/plot_slowdown.py pick_place.csv
 ```

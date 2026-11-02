@@ -34,14 +34,17 @@ add_library(robot_motion STATIC src/motion.cpp src/supervision.cpp src/hand_rece
 target_link_libraries(robot_motion PUBLIC s_curve examples_common Threads::Threads)
 
 # --- Programs (apps/)
-add_executable(robot_test_slowdown apps/robot_test_slowdown.cpp)
-target_link_libraries(robot_test_slowdown robot_motion)
+add_executable(pick_place apps/pick_place.cpp)
+target_link_libraries(pick_place robot_motion)
 
 add_executable(calibrate_camera apps/calibrate_camera.cpp)
 target_link_libraries(calibrate_camera robot_motion)
 
 add_executable(test_hand_receiver apps/test_hand_receiver.cpp)
 target_link_libraries(test_hand_receiver robot_motion)
+
+add_executable(record_pose apps/record_pose.cpp)
+target_link_libraries(record_pose robot_motion)
 
 add_executable(read_state apps/read_state.cpp)
 target_link_libraries(read_state Franka::Franka)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot robot_slowdown.csv from robot_test_slowdown (format in apps/robot_test_slowdown.cpp).
+"""Plot pick_place.csv from pick_place (format in apps/pick_place.cpp).
 
 Writes two figures next to the log:
   <name>_speed.png   EE speed and energy-limited speed v_safe (every tick), and the EE's
@@ -21,7 +21,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 GAP = 0.3  # [s] between segments on the motion-time axis
-NAMES = ["start->pre-pick", "down", "up", "pre-pick->start"]
+NAMES = ["start->pre-pick", "down to pick", "up from pick", "pre-pick->pre-place",
+         "down to place", "up from place", "pre-place->start"]
 
 path = sys.argv[1]
 base = path.rsplit(".", 1)[0]
@@ -80,7 +81,8 @@ def decorate(ax, label_segments=False):
 # --- EE speed vs v_safe.
 fig, (ax_v, ax_d) = plt.subplots(2, 1, figsize=(14, 7), sharex=True,
                                  gridspec_kw={"height_ratios": [3, 1]})
-ax_v.plot(x, per_segment(d["ee_speed"]), color="k", lw=1.2, label="EE speed |J(q)·dq|")
+ax_v.plot(x, per_segment(d["ee_speed"]), color="k", lw=1.2,
+          label="reference point speed |J(q)·dq| (object tip while held, else EE)")
 ax_v.plot(x, per_segment(d["v_safe"]), color="tab:red", lw=1,
           label="v_safe = sqrt(2·S_lim / m_eff) along the motion")
 ax_v.set_ylabel("speed [m/s]")

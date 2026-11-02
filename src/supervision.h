@@ -13,6 +13,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <vector>
 
@@ -51,14 +52,21 @@ struct Shared {
   SeqLock<Snapshot> snapshot;
   SeqLock<Command> command;
   uint32_t next_segment_id = 1;  // only touched by the control thread
+  // Set by the main program while the gripper holds the object (between grasp and release, with
+  // the robot at rest): the supervisor then uses the object's far end as the reference point.
+  std::atomic<bool> holding_object{false};
 };
 
 struct Params {
   double horizon = 0.5;   // prediction horizon [s]
   double sample_dt = 0.01;
-  // A hand intrudes when a predicted EE point is closer to its sphere center than the sphere
-  // radius sent by the detector plus this margin [m].
+  // A hand intrudes when a predicted reference point is closer to its sphere center than the
+  // sphere radius sent by the detector plus this margin [m].
   double radius_margin = 0.01;
+  // While an object is held, the reference point for the intrusion test and the energy limit is
+  // its far end: this far from the EE (fingertip center) along the tool z axis [m]. Otherwise it
+  // is the EE itself.
+  double object_tip_offset = 0.0;
   double s_lim = 0.05;    // transferable energy limit [J]
   double hold_after_slowdown = 0.3;  // no detection for this long once a slowdown is done [s]
 };
@@ -97,15 +105,21 @@ class Supervisor {
   // Handles one camera frame.
   void onFrame(const HandObservation& hands);
 
-  // Energy-limited EE speed at configuration q when moving in direction u (unit, base frame).
-  double safeSpeed(const scurve::Vec7& q, const Eigen::Vector3d& u) const;
+  // Energy-limited speed of the reference point (the object's far end if `at_object_tip`, else
+  // the EE) at configuration q when moving in direction u (unit, base frame).
+  double safeSpeed(const scurve::Vec7& q, const Eigen::Vector3d& u, bool at_object_tip) const;
+
+  // Flange-to-reference-point transform for libfranka's model, in place of F_T_EE.
+  const std::array<double, 16>& flangeToReference(bool at_object_tip) const {
+    return at_object_tip ? F_T_tip_ : state_.F_T_EE;
+  }
 
   // Commands sent so far. Read only after the supervisor thread has stopped.
   const std::vector<Decision>& decisions() const { return decisions_; }
 
  private:
   using Jacobian = Eigen::Matrix<double, 6, 7>;
-  Jacobian jacobian(const scurve::Vec7& q) const;
+  Jacobian jacobian(const scurve::Vec7& q, bool at_object_tip) const;
   // Joint velocity moving the EE vertically at 1 m/s (+1 up, -1 down) without rotating.
   Eigen::Matrix<double, 7, 1> verticalJointRate(const scurve::Vec7& q, double direction) const;
   // Speed cap in the snapshot's units; sets *intrusion.
@@ -114,6 +128,7 @@ class Supervisor {
 
   const franka::Model& model_;
   franka::RobotState state_;  // F_T_EE, EE_T_K and load for the model
+  std::array<double, 16> F_T_tip_;  // F_T_EE moved to the held object's far end
   Params params_;
   Shared* shared_;
 
