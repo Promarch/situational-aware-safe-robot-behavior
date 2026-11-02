@@ -1,6 +1,6 @@
 // Hand-aware speed supervision.
 //
-// The 1 kHz control loop publishes a Snapshot of the running segment every tick. The supervisor
+// The 1 kHz control loop publishes a Snapshot of the running motion every tick. The supervisor
 // runs in its own thread, once per camera frame: it predicts the EE positions over the next
 // `horizon` from the snapshot, and if one comes within any hand's sphere radius plus
 // `radius_margin` of that hand's center (or a hand is seen without a position) it computes the
@@ -11,6 +11,9 @@
 // `hold_after_slowdown`. When the hand no longer intrudes, it sends the nominal speed to resume;
 // a resume is not waited for: every frame is still checked, and a slowdown replaces it.
 // The control loop applies a cap by re-planning from its own state (see motion.cpp).
+//
+// "Motion" here is one supervised motion call (moveJointSCurve or moveVerticalTo), identified by
+// motion_id; not to be confused with the constant-jerk segments of a Profile1D.
 #pragma once
 
 #include <array>
@@ -28,9 +31,9 @@
 namespace supervision {
 
 struct Snapshot {
-  uint32_t segment_id = 0;  // 0: no segment running
-  bool vertical = false;    // vertical Cartesian segment, else joint S-curve
-  double t = 0.0;           // time since the segment started [s]
+  uint32_t motion_id = 0;   // 0: no motion running
+  bool vertical = false;    // vertical Cartesian motion, else joint S-curve
+  double t = 0.0;           // time since the motion started [s]
   scurve::Profile1D profile;  // sigma (joint) or travelled distance (vertical); time 0 = t_replan
   double t_replan = 0.0;
   bool changing = false;      // velocity change of the last applied cap still running
@@ -38,12 +41,12 @@ struct Snapshot {
   double cap = 0.0;           // active cap (nominal when not slowed)
   double nominal = 0.0;       // nominal sigma velocity [1/s] or vertical speed [m/s]
   scurve::Vec7 q{};           // current joints
-  scurve::Vec7 q_start{}, delta{};   // joint segment path: q = q_start + delta * sigma
-  double direction = 0.0;            // vertical segment: +1 up, -1 down
+  scurve::Vec7 q_start{}, delta{};   // joint motion path: q = q_start + delta * sigma
+  double direction = 0.0;            // vertical motion: +1 up, -1 down
 };
 
 struct Command {
-  uint32_t segment_id = 0;  // only applied to this segment
+  uint32_t motion_id = 0;  // only applied to this motion
   uint32_t seq = 0;
   double cap = 0.0;  // sigma velocity [1/s] (joint) or vertical speed [m/s]
 };
@@ -52,7 +55,7 @@ struct Command {
 struct Shared {
   SeqLock<Snapshot> snapshot;
   SeqLock<Command> command;
-  uint32_t next_segment_id = 1;  // only touched by the control thread
+  uint32_t next_motion_id = 1;  // only touched by the control thread
   // Set by the main program while the gripper holds the object (between grasp and release, with
   // the robot at rest): the supervisor then uses the object's far end as the reference point.
   std::atomic<bool> holding_object{false};
@@ -91,8 +94,8 @@ struct HandObservation {
 
 // One command sent by the supervisor.
 struct Decision {
-  uint32_t segment_id;
-  double t_segment;     // time since the segment started [s]
+  uint32_t motion_id;
+  double t_motion;      // time since the motion started [s]
   bool slow_down;       // false: resume to nominal
   double cap_fraction;  // cap / nominal speed
 };
@@ -140,8 +143,8 @@ class Supervisor {
   uint32_t seq_ = 0;
   uint32_t waiting_for_ = 0;  // slowdown seq whose velocity change and hold we wait for, 0: none
   bool holding_ = false;      // the last command sent is a slowdown
-  uint32_t segment_ = 0;
-  // Cap last commanded for the current segment (nominal until the first command). Compared
+  uint32_t motion_ = 0;
+  // Cap last commanded for the current motion (nominal until the first command). Compared
   // against instead of the snapshot's cap, which lags until the control loop applies a command.
   double target_cap_ = 0.0;
   std::vector<Decision> decisions_;

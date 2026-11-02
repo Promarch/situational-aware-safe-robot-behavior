@@ -14,7 +14,7 @@
 // Usage: pick_place [S_lim in J, default 0.05] [UDP port, default 5005]
 // Writes, then plot with  python3 ../scripts/plot_slowdown.py pick_place.csv
 //   pick_place.csv, one row per control tick:
-//     t, segment (0..6, see kSegmentNames), t_segment,
+//     t, segment (motion index 0..6, see kMotionNames), t_segment (time in that motion),
 //     ee_speed = |J(q) dq| of the reference point (measured dq) [m/s], v_safe there along its
 //     commanded motion direction (J(q) dq_d),
 //     m_eff = effective mass there along that direction [kg] (v_safe =
@@ -23,7 +23,7 @@
 //     nearest located hand's intrusion boundary, sphere radius + margin; < 0 inside),
 //     dq1..dq7 measured, dq_d1..dq_d7 commanded [rad/s], tau_ext1..tau_ext7 estimated external
 //     joint torques [Nm]
-//   pick_place_decisions.csv: segment, t_segment, action (slow/resume), cap_percent
+//   pick_place_decisions.csv: segment (motion index), t_segment, action (slow/resume), cap_percent
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
@@ -77,10 +77,11 @@ constexpr double kSuggestedMargin = 1.5;  // suggested threshold = largest torqu
 constexpr std::array<double, 7> kJointImpedance = {{3000, 3000, 3000, 2500, 2500, 2000, 2000}};
 constexpr std::array<double, 6> kCartesianImpedance = {{3000, 3000, 3000, 300, 300, 300}};
 
-// Segments in the order they run; supervision segment id = index + 1.
-const char* const kSegmentNames[] = {"start->pre-pick", "down to pick", "up from pick",
-                                     "pre-pick->pre-place", "down to place", "up from place",
-                                     "pre-place->start"};
+// Supervised motions in the order they run; supervision motion id = index + 1. The CSV columns
+// keep the names "segment" and "t_segment" for the plot scripts.
+const char* const kMotionNames[] = {"start->pre-pick", "down to pick", "up from pick",
+                                    "pre-pick->pre-place", "down to place", "up from place",
+                                    "pre-place->start"};
 struct Frame {
   double t;  // TickLog clock [s]
   supervision::HandObservation hands;
@@ -107,7 +108,7 @@ int main(int argc, char** argv) {
     const franka::RobotState start = robot.readOnce();
     const double z_grasp = poses::kTableZ + poses::kGraspHeight;
 
-    // Segment ids 1..7 are the supervised motions of the task, in kSegmentNames order.
+    // Motion ids 1..7 are the supervised motions of the task, in kMotionNames order.
     supervision::Shared shared;
     supervision::Supervisor supervisor(model, start, params, &shared);
 
@@ -188,7 +189,7 @@ int main(int argc, char** argv) {
       z = motion::moveVerticalTo(robot, z_pre_pick, kVerticalLimits, &shared, &log);
       std::cout << "up from pick, z error " << (z - z_pre_pick) * 1e3 << " mm\n";
       if (!grasped) {
-        // Still supervised; in the log this segment shows as "pre-pick->pre-place".
+        // Still supervised; in the log this motion shows as "pre-pick->pre-place".
         std::cout << "nothing to place: back to start\n";
         motion::moveJointSCurve(robot, poses::kStart, kJointLimits, &shared, &log);
         return false;
@@ -244,10 +245,10 @@ int main(int argc, char** argv) {
     std::ofstream dec("pick_place_decisions.csv");
     dec << "segment,t_segment,action,cap_percent\n";
     for (const supervision::Decision& d : supervisor.decisions()) {
-      std::cout << "  " << kSegmentNames[d.segment_id - 1] << " t=" << d.t_segment << " s: "
+      std::cout << "  " << kMotionNames[d.motion_id - 1] << " t=" << d.t_motion << " s: "
                 << (d.slow_down ? "slow down" : "resume") << ", cap " << d.cap_fraction * 100
                 << "%\n";
-      dec << d.segment_id - 1 << "," << d.t_segment << "," << (d.slow_down ? "slow" : "resume")
+      dec << d.motion_id - 1 << "," << d.t_motion << "," << (d.slow_down ? "slow" : "resume")
           << "," << d.cap_fraction * 100 << "\n";
     }
 
@@ -259,8 +260,8 @@ int main(int argc, char** argv) {
       for (int i = 1; i <= 7; ++i) csv << "," << name << i;
     }
     csv << "\n";
-    constexpr int kNumSegments = sizeof(kSegmentNames) / sizeof(kSegmentNames[0]);
-    std::array<double, kNumSegments> m_eff_min, m_eff_max;  // per segment, for the summary
+    constexpr int kNumMotions = sizeof(kMotionNames) / sizeof(kMotionNames[0]);
+    std::array<double, kNumMotions> m_eff_min, m_eff_max;  // per motion, for the summary
     m_eff_min.fill(INFINITY);
     m_eff_max.fill(0.0);
     size_t f = 0;  // latest camera frame at or before the tick
@@ -269,7 +270,7 @@ int main(int argc, char** argv) {
       while (f + 1 < frames.size() && frames[f + 1].t <= r.t) ++f;
       const supervision::HandObservation hands_now =
           !frames.empty() && frames[f].t <= r.t ? frames[f].hands : supervision::HandObservation{};
-      // Same reference point as the supervisor used in this segment.
+      // Same reference point as the supervisor used in this motion.
       const bool at_tip = r.holding_object;  // the point the supervisor used at this tick
       const std::array<double, 16>& F_T_ref = supervisor.flangeToReference(at_tip);
       const Jacobian J = Eigen::Map<const Jacobian>(
@@ -283,14 +284,14 @@ int main(int argc, char** argv) {
           J.topRows<3>() * Eigen::Map<const Eigen::Matrix<double, 7, 1>>(r.dq_d.data());
       const double speed = v.norm();
       const double speed_d = v_d.norm();
-      csv << r.t << "," << r.segment << "," << r.t_segment << "," << speed << ",";
+      csv << r.t << "," << r.motion << "," << r.t_motion << "," << speed << ",";
       if (speed_d > 1e-4) {  // no motion direction at rest
         const Eigen::Vector3d u = v_d / speed_d;
         const double m_eff = supervisor.effectiveMass(r.q, u, at_tip);
         csv << supervisor.safeSpeed(r.q, u, at_tip) << "," << m_eff;
-        if (r.segment >= 0 && r.segment < kNumSegments && speed_d > 0.01) {  // skip near rest
-          m_eff_min[r.segment] = std::min(m_eff_min[r.segment], m_eff);
-          m_eff_max[r.segment] = std::max(m_eff_max[r.segment], m_eff);
+        if (r.motion >= 0 && r.motion < kNumMotions && speed_d > 0.01) {  // skip near rest
+          m_eff_min[r.motion] = std::min(m_eff_min[r.motion], m_eff);
+          m_eff_max[r.motion] = std::max(m_eff_max[r.motion], m_eff);
         }
       } else {
         csv << ",";
@@ -315,9 +316,9 @@ int main(int argc, char** argv) {
       csv << "\n";
     }
     std::cout << "\nEffective mass at the reference point along its motion (above 1 cm/s) [kg]:\n";
-    for (int seg = 0; seg < kNumSegments; ++seg) {
+    for (int seg = 0; seg < kNumMotions; ++seg) {
       if (m_eff_max[seg] > 0.0) {
-        std::cout << "  " << kSegmentNames[seg] << ": " << std::setprecision(3) << m_eff_min[seg]
+        std::cout << "  " << kMotionNames[seg] << ": " << std::setprecision(3) << m_eff_min[seg]
                   << " .. " << m_eff_max[seg] << "\n";
       }
     }

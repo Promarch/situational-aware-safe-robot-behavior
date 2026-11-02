@@ -20,8 +20,8 @@ struct CartesianLimits {
 
 struct Tick {
   double t;           // wall time since the log was created [s]
-  int segment;        // supervision segment id - 1 (-1 without supervision)
-  double t_segment;   // time since the segment started [s]
+  int motion;         // supervision motion id - 1 (-1 without supervision)
+  double t_motion;    // time since the motion started [s]
   scurve::Vec7 q;     // measured joint positions
   scurve::Vec7 dq;    // measured joint velocities
   scurve::Vec7 dq_d;  // commanded joint velocities

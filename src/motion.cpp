@@ -10,11 +10,11 @@
 namespace motion {
 
 namespace {
-// The supervisor's latest command for segment `id`, if newer than `applied_seq`. A single read
+// The supervisor's latest command for motion `id`, if newer than `applied_seq`. A single read
 // attempt: never waits in the control loop.
 bool pendingCap(const supervision::Shared* shared, uint32_t id, uint32_t applied_seq,
                 supervision::Command* c) {
-  return shared != nullptr && shared->command.tryLoad(c) && c->segment_id == id &&
+  return shared != nullptr && shared->command.tryLoad(c) && c->motion_id == id &&
          c->seq > applied_seq;
 }
 }  // namespace
@@ -22,7 +22,7 @@ bool pendingCap(const supervision::Shared* shared, uint32_t id, uint32_t applied
 double moveJointSCurve(franka::Robot& robot, const scurve::Vec7& q_goal,
                        const scurve::JointLimits& limits, supervision::Shared* shared,
                        TickLog* log) {
-  const uint32_t id = shared != nullptr ? shared->next_segment_id++ : 0;
+  const uint32_t id = shared != nullptr ? shared->next_motion_id++ : 0;
   std::optional<scurve::JointSCurve> traj;
   uint32_t applied_seq = 0;
   double cap = 0.0;
@@ -47,7 +47,7 @@ double moveJointSCurve(franka::Robot& robot, const scurve::Vec7& q_goal,
 
     if (shared != nullptr) {
       supervision::Snapshot s;
-      s.segment_id = finished ? 0 : id;
+      s.motion_id = finished ? 0 : id;
       s.t = t;
       s.profile = traj->sigma();
       s.t_replan = traj->replanTime();
@@ -78,7 +78,7 @@ double moveJointSCurve(franka::Robot& robot, const scurve::Vec7& q_goal,
 
 double moveVerticalTo(franka::Robot& robot, double z_target, const CartesianLimits& limits,
                       supervision::Shared* shared, TickLog* log) {
-  const uint32_t id = shared != nullptr ? shared->next_segment_id++ : 0;
+  const uint32_t id = shared != nullptr ? shared->next_motion_id++ : 0;
   bool started = false;
   double distance = 0.0, direction = 1.0;
   scurve::Profile1D profile;  // travelled distance; its time 0 is t_replan
@@ -114,7 +114,7 @@ double moveVerticalTo(franka::Robot& robot, double z_target, const CartesianLimi
 
     if (shared != nullptr) {
       supervision::Snapshot s;
-      s.segment_id = finished ? 0 : id;
+      s.motion_id = finished ? 0 : id;
       s.vertical = true;
       s.t = t;
       s.profile = profile;

@@ -12,7 +12,7 @@ using JointPose = std::array<double, 7>;
 constexpr JointPose kHome = {{0, -M_PI_4, 0, -3 * M_PI_4, 0, M_PI_2, M_PI_4}};
 
 // Start and end of the slowdown test: home with joint 1 turned +90 deg (EE on the robot's left),
-// so the joint segments to and from the pick point (on the right) are long.
+// so the joint motions to and from the pick point (on the right) are long.
 constexpr JointPose kStart = {{M_PI_2, -M_PI_4, 0, -3 * M_PI_4, 0, M_PI_2, M_PI_4}};
 
 // 20 cm above the pick point (the screwdriver lying on the table), tool axis straight down, EE x

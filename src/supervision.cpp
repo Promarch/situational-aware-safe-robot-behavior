@@ -58,7 +58,7 @@ Eigen::Matrix<double, 7, 1> Supervisor::verticalJointRate(const scurve::Vec7& q,
 double Supervisor::evaluate(const Snapshot& s, const HandObservation& hands,
                             bool* intrusion) const {
   // Joints at the predicted path parameter (sigma or vertical distance) over the horizon.
-  // Joint segment: on the straight joint line. Vertical segment: follow the line from the
+  // Joint motion: on the straight joint line. Vertical motion: follow the line from the
   // robot's current pose with the model, in small resolved-rate steps.
   std::vector<scurve::Vec7> qs;
   scurve::Vec7 q = s.q;
@@ -96,8 +96,8 @@ double Supervisor::evaluate(const Snapshot& s, const HandObservation& hands,
     return s.nominal;
   }
 
-  // Reference point velocity per unit of the segment's speed variable at each predicted pose:
-  // J * delta for a joint segment, J * (joint rate for a unit vertical velocity) for a vertical
+  // Reference point velocity per unit of the motion's speed variable at each predicted pose:
+  // J * delta for a joint motion, J * (joint rate for a unit vertical velocity) for a vertical
   // one. The cap is the highest speed at which every predicted point stays under its
   // energy-limited speed.
   double cap = s.nominal;
@@ -116,23 +116,23 @@ double Supervisor::evaluate(const Snapshot& s, const HandObservation& hands,
 
 void Supervisor::send(const Snapshot& s, double cap) {
   Command c;
-  c.segment_id = s.segment_id;
+  c.motion_id = s.motion_id;
   c.seq = ++seq_;
   c.cap = cap;
   shared_->command.store(c);
   target_cap_ = cap;
   holding_ = cap < s.nominal * (1.0 - 1e-6);
   waiting_for_ = holding_ ? c.seq : 0;  // only a slowdown is waited for
-  decisions_.push_back({s.segment_id, s.t, holding_, cap / s.nominal});
+  decisions_.push_back({s.motion_id, s.t, holding_, cap / s.nominal});
 }
 
 void Supervisor::onFrame(const HandObservation& hands) {
   const Snapshot s = shared_->snapshot.load();
-  if (s.segment_id == 0) {
-    return;  // between segments
+  if (s.motion_id == 0) {
+    return;  // between motions
   }
-  if (s.segment_id != segment_) {
-    segment_ = s.segment_id;  // new segment starts at nominal speed
+  if (s.motion_id != motion_) {
+    motion_ = s.motion_id;  // new motion starts at nominal speed
     waiting_for_ = 0;
     holding_ = false;
     target_cap_ = s.nominal;
