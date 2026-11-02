@@ -61,7 +61,8 @@ double moveJointSCurve(franka::Robot& robot, const scurve::Vec7& q_goal,
       shared->snapshot.store(s);
     }
     if (log != nullptr) {
-      log->push({log->now(), static_cast<int>(id) - 1, t, state.q, state.dq, state.dq_d});
+      log->push({log->now(), static_cast<int>(id) - 1, t, state.q, state.dq, state.dq_d,
+                 state.tau_ext_hat_filtered, shared != nullptr && shared->holding_object.load()});
     }
     last = state;
     franka::JointVelocities cmd(ref.dq);
@@ -127,7 +128,8 @@ double moveVerticalTo(franka::Robot& robot, double z_target, const CartesianLimi
       shared->snapshot.store(s);
     }
     if (log != nullptr) {
-      log->push({log->now(), static_cast<int>(id) - 1, t, state.q, state.dq, state.dq_d});
+      log->push({log->now(), static_cast<int>(id) - 1, t, state.q, state.dq, state.dq_d,
+                 state.tau_ext_hat_filtered, shared != nullptr && shared->holding_object.load()});
     }
     last = state;
     franka::CartesianVelocities cmd(std::array<double, 6>{{0.0, 0.0, vz, 0.0, 0.0, 0.0}});

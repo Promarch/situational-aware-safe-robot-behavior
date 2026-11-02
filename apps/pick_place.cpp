@@ -19,7 +19,8 @@
 //     direction (every tick; empty at rest), hand_present (a hand seen, or position unknown),
 //     hand_unlocated (position unknown or stream stale), hand_clearance (reference point to the
 //     nearest located hand's intrusion boundary, sphere radius + margin; < 0 inside),
-//     dq1..dq7 measured, dq_d1..dq_d7 commanded [rad/s]
+//     dq1..dq7 measured, dq_d1..dq_d7 commanded [rad/s], tau_ext1..tau_ext7 estimated external
+//     joint torques [Nm]
 //   pick_place_decisions.csv: segment, t_segment, action (slow/resume), cap_percent
 #include <cmath>
 #include <cstdlib>
@@ -58,13 +59,24 @@ constexpr double kGripperSpeed = 0.05;       // [m/s]
 constexpr double kGraspForce = 20.0;         // [N]
 constexpr double kMinTipClearance = 0.01;    // tip above the table when released, at least [m]
 
+// Collision detection, set with setCollisionBehavior before the task (libfranka's example
+// defaults are 20 Nm / 20 N). Above an "upper" threshold the robot stops with a reflex; the
+// "lower" ones only raise the contact flags. As sensitive as normal motion allows: after a run
+// the program prints the largest estimated external torque per joint and suggests thresholds.
+constexpr std::array<double, 7> kUpperTorque = {{10.0, 10.0, 9.0, 9.0, 8.0, 7.0, 6.0}};  // [Nm]
+constexpr std::array<double, 7> kLowerTorque = {{5.0, 5.0, 4.5, 4.5, 4.0, 3.5, 3.0}};   // [Nm]
+constexpr std::array<double, 6> kUpperForce = {{10.0, 10.0, 10.0, 10.0, 10.0, 10.0}};   // [N, Nm]
+constexpr std::array<double, 6> kLowerForce = {{5.0, 5.0, 5.0, 5.0, 5.0, 5.0}};         // [N, Nm]
+constexpr double kSuggestedMargin = 1.5;  // suggested threshold = largest torque seen * margin
+
+// Impedances of the robot's internal controllers (as libfranka's examples use).
+constexpr std::array<double, 7> kJointImpedance = {{3000, 3000, 3000, 2500, 2500, 2000, 2000}};
+constexpr std::array<double, 6> kCartesianImpedance = {{3000, 3000, 3000, 300, 300, 300}};
+
 // Segments in the order they run; supervision segment id = index + 1.
 const char* const kSegmentNames[] = {"start->pre-pick", "down to pick", "up from pick",
                                      "pre-pick->pre-place", "down to place", "up from place",
                                      "pre-place->start"};
-// Segments that move with the screwdriver in the gripper (between grasp and release).
-bool holdsObject(int segment) { return segment >= 2 && segment <= 4; }
-
 struct Frame {
   double t;  // TickLog clock [s]
   supervision::HandObservation hands;
@@ -127,8 +139,12 @@ int main(int argc, char** argv) {
     if (!confirm("pick and place: home the gripper if needed, return to start, run the whole task")) {
       return 0;
     }
-    // Rejected while the user stop is pressed, so only set right before moving.
-    setDefaultBehavior(robot);
+    // Rejected while the user stop is pressed, so only set right before moving. The same
+    // thresholds apply during acceleration and at constant speed.
+    robot.setCollisionBehavior(kLowerTorque, kUpperTorque, kLowerTorque, kUpperTorque,
+                               kLowerForce, kUpperForce, kLowerForce, kUpperForce);
+    robot.setJointImpedance(kJointImpedance);
+    robot.setCartesianImpedance(kCartesianImpedance);
     if (gripper.readOnce().max_width < 0.01) gripper.homing();
     const double max_width = gripper.readOnce().max_width;
 
@@ -225,7 +241,7 @@ int main(int argc, char** argv) {
     std::ofstream csv("pick_place.csv");
     csv << std::setprecision(7)
         << "t,segment,t_segment,ee_speed,v_safe,hand_present,hand_unlocated,hand_clearance";
-    for (const char* name : {"dq", "dq_d"}) {
+    for (const char* name : {"dq", "dq_d", "tau_ext"}) {
       for (int i = 1; i <= 7; ++i) csv << "," << name << i;
     }
     csv << "\n";
@@ -236,7 +252,7 @@ int main(int argc, char** argv) {
       const supervision::HandObservation hands_now =
           !frames.empty() && frames[f].t <= r.t ? frames[f].hands : supervision::HandObservation{};
       // Same reference point as the supervisor used in this segment.
-      const bool at_tip = holdsObject(r.segment);
+      const bool at_tip = r.holding_object;  // the point the supervisor used at this tick
       const std::array<double, 16>& F_T_ref = supervisor.flangeToReference(at_tip);
       const Jacobian J = Eigen::Map<const Jacobian>(
           model.zeroJacobian(franka::Frame::kEndEffector, r.q, F_T_ref, start.EE_T_K).data());
@@ -259,10 +275,23 @@ int main(int argc, char** argv) {
         }
         csv << clearance;
       }
-      for (const scurve::Vec7* v7 : {&r.dq, &r.dq_d}) {
+      for (const scurve::Vec7* v7 : {&r.dq, &r.dq_d, &r.tau_ext}) {
         for (double x : *v7) csv << "," << x;
       }
       csv << "\n";
+    }
+    // Collision thresholds: what normal motion needed.
+    std::array<double, 7> tau_max{};
+    for (size_t k = 0; k < log.size; ++k) {
+      for (size_t i = 0; i < 7; ++i) {
+        tau_max[i] = std::max(tau_max[i], std::abs(log.ticks[k].tau_ext[i]));
+      }
+    }
+    std::cout << "\nLargest estimated external torque during the task [Nm] (reflex above):\n";
+    for (size_t i = 0; i < 7; ++i) {
+      std::cout << "  joint " << i + 1 << ": " << std::setprecision(2) << tau_max[i] << " ("
+                << kUpperTorque[i] << ")  suggested threshold "
+                << std::ceil(tau_max[i] * kSuggestedMargin * 2.0) / 2.0 << "\n";
     }
     std::cout << "Wrote pick_place.csv (" << log.size << " ticks"
               << (log.size == log.ticks.size() ? ", log full" : "")

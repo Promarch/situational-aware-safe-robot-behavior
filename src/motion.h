@@ -25,6 +25,8 @@ struct Tick {
   scurve::Vec7 q;     // measured joint positions
   scurve::Vec7 dq;    // measured joint velocities
   scurve::Vec7 dq_d;  // commanded joint velocities
+  scurve::Vec7 tau_ext;  // estimated external joint torques (tau_ext_hat_filtered) [Nm]
+  bool holding_object;   // the supervisor's reference point was the object's tip
 };
 
 // Per-tick log, allocated up front so the control loop never allocates; full -> drops ticks.
