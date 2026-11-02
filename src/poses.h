@@ -22,11 +22,11 @@ constexpr JointPose kPrePickJoints = {
     {-0.035886, 0.377146, -0.416845, -1.943431, 0.197729, 2.280601, 1.799564}};
 
 // Above the place point (the pen holder), the gripper turned 90 deg so the screwdriver (held
-// along the EE x axis) hangs straight down: EE x axis straight down, tool z axis horizontal. The
-// EE is kPrePlaceTipHeight + the screwdriver's length above the table, so its tip is
-// kPrePlaceTipHeight up. NaN until recorded, e.g. for a 0.15 m screwdriver:
-//   record_pose kPrePlaceJoints --x-down --z 0.45
-constexpr JointPose kPrePlaceJoints = {{NAN, NAN, NAN, NAN, NAN, NAN, NAN}};
+// along the EE x axis) hangs straight down: EE x axis straight down, tool z axis horizontal, EE
+// kPrePlaceHeight above the table. Recorded on 2026-11-02 with
+//   record_pose kPrePlaceJoints --x-down --z 0.30
+constexpr JointPose kPrePlaceJoints = {
+    {2.323794, 0.779593, -0.398577, -1.461532, -1.080884, 1.352486, -0.167051}};
 
 // Height of the table surface in the base frame [m].
 constexpr double kTableZ = 0.0;
@@ -34,10 +34,11 @@ constexpr double kTableZ = 0.0;
 // EE (fingertip center) above the table when grasping [m].
 constexpr double kGraspHeight = 0.02;
 
-// Held object's tip above the table at the pre-place pose, clear of the holder's rim [m].
-constexpr double kPrePlaceTipHeight = 0.30;
+// EE (fingertip center) above the table at the pre-place pose [m]; the screwdriver's tip hangs
+// 0.15 m lower, clear of the holder's rim.
+constexpr double kPrePlaceHeight = 0.30;
 
 // Straight descent from the pre-place pose into the holder before releasing [m].
-constexpr double kPlaceDescent = 0.25;
+constexpr double kPlaceDescent = 0.10;
 
 }  // namespace poses

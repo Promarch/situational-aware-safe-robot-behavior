@@ -80,7 +80,7 @@ int main(int argc, char** argv) {
   if (std::isnan(poses::kPrePlaceJoints[0])) {
     std::cerr << "Not configured yet: poses::kPrePlaceJoints, record it with\n  record_pose "
                  "kPrePlaceJoints --x-down --z "
-              << poses::kTableZ + poses::kPrePlaceTipHeight + kObjectTip.norm() << "\n";
+              << poses::kTableZ + poses::kPrePlaceHeight << "\n";
     return 1;
   }
 
