@@ -101,6 +101,8 @@ int main(int argc, char** argv) {
           franka::Frame::kEndEffector, q, supervisor.flangeToReference(tip), start.EE_T_K);
       return Eigen::Vector3d(T[12], T[13], T[14]);
     };
+    const Eigen::Vector3d ee_pre_pick = pointAt(poses::kPrePickJoints, false);
+    const Eigen::Vector3d tip_pre_pick = pointAt(poses::kPrePickJoints, true);
     const Eigen::Vector3d ee_pre_place = pointAt(poses::kPrePlaceJoints, false);
     const Eigen::Vector3d tip_pre_place = pointAt(poses::kPrePlaceJoints, true);
     const double tip_released = tip_pre_place.z() - poses::kPlaceDescent - poses::kTableZ;
@@ -109,7 +111,9 @@ int main(int argc, char** argv) {
               << " J, intrusion radius: hand sphere + " << params.radius_margin * 100
               << " cm, horizon " << params.horizon << " s, hold after slowdown "
               << params.hold_after_slowdown << " s\n"
-              << "pick: grasp at EE height " << z_grasp * 100 << " cm, width "
+              << "pick: EE " << ee_pre_pick.transpose() << ", tip once held "
+              << tip_pre_pick.transpose() << " -> grasp at EE height " << z_grasp * 100
+              << " cm, width "
               << kGraspWidth * 100 << " cm, force " << kGraspForce << " N\n"
               << "place: EE " << ee_pre_place.transpose() << ", tip " << tip_pre_place.transpose()
               << " -> descend " << poses::kPlaceDescent * 100 << " cm, release with the tip "

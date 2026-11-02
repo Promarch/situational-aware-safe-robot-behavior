@@ -15,11 +15,11 @@ constexpr JointPose kHome = {{0, -M_PI_4, 0, -3 * M_PI_4, 0, M_PI_2, M_PI_4}};
 // so the joint segments to and from the pick point (on the right) are long.
 constexpr JointPose kStart = {{M_PI_2, -M_PI_4, 0, -3 * M_PI_4, 0, M_PI_2, M_PI_4}};
 
-// 20 cm above the pick point (x=0.560 y=-0.255), tool axis straight down, fingers aligned with
-// the base axes. Recorded on 2026-10-27 after reaching that pose through the Cartesian pose
-// interface (Franka Hand in Desk: F_T_EE z=0.1034, m_ee=0.73 kg).
+// 20 cm above the pick point (the screwdriver lying on the table), tool axis straight down, EE x
+// axis towards the screwdriver's tip. Recorded on 2026-11-02 after moving the robot base, with
+//   record_pose kPrePickJoints --z 0.20
 constexpr JointPose kPrePickJoints = {
-    {-0.035886, 0.377146, -0.416845, -1.943431, 0.197729, 2.280601, 1.799564}};
+    {0.580007, 0.244046, -0.577406, -2.155282, 0.186396, 2.351896, -0.901448}};
 
 // Above the place point (the pen holder), the gripper turned 90 deg so the screwdriver (held
 // along the EE x axis) hangs straight down: EE x axis straight down, tool z axis horizontal, EE
