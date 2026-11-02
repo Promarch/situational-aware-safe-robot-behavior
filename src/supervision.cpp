@@ -120,8 +120,9 @@ void Supervisor::send(const Snapshot& s, double cap) {
   c.seq = ++seq_;
   c.cap = cap;
   shared_->command.store(c);
-  waiting_for_ = c.seq;
+  target_cap_ = cap;
   holding_ = cap < s.nominal * (1.0 - 1e-6);
+  waiting_for_ = holding_ ? c.seq : 0;  // only a slowdown is waited for
   decisions_.push_back({s.segment_id, s.t, holding_, cap / s.nominal});
 }
 
@@ -133,15 +134,18 @@ void Supervisor::onFrame(const HandObservation& hands) {
   if (s.segment_id != segment_) {
     segment_ = s.segment_id;  // new segment starts at nominal speed
     waiting_for_ = 0;
+    holding_ = false;
+    target_cap_ = s.nominal;
   }
   if (waiting_for_ != 0) {
-    // Computed once: look again only after our command was applied and its change finished,
-    // and after a slowdown hold the reached speed for a while without looking.
+    // After a slowdown: computed once, look again only after it was applied, its change
+    // finished and the reached speed was held for a while without looking. A resume is never
+    // waited for, so a hand that intrudes while the robot speeds up again is still seen.
     if (s.applied_seq != waiting_for_ || s.changing) {
       return;
     }
     const double change_end = s.t_replan + scurve::velocityChangeEnd(s.profile);
-    if (holding_ && s.t < change_end + params_.hold_after_slowdown) {
+    if (s.t < change_end + params_.hold_after_slowdown) {
       return;
     }
     waiting_for_ = 0;
@@ -151,9 +155,12 @@ void Supervisor::onFrame(const HandObservation& hands) {
   const bool any_hand = hands.n_hands > 0 || hands.unlocated;
   const double cap = any_hand ? evaluate(s, hands, &intrusion) : s.nominal;
   const double eps = 1e-6 * s.nominal;
-  if (intrusion && cap < s.cap - eps) {
-    send(s, cap);  // slow down
-  } else if (!intrusion && s.cap < s.nominal - eps) {
+  // Against the commanded cap, not s.cap: a resume not yet applied still shows the slow cap.
+  if (intrusion && cap < target_cap_ - eps) {
+    // Slow down. Also replaces a resume, whether still accelerating or not yet applied (the
+    // control loop only sees the latest command).
+    send(s, cap);
+  } else if (!intrusion && target_cap_ < s.nominal - eps) {
     send(s, s.nominal);  // resume
   }
 }

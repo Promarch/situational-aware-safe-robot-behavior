@@ -8,7 +8,8 @@
 //   v_safe = sqrt(2 * S_lim / m_eff),  m_eff = 1 / (u^T [J M^-1 J^T]_pos u),
 // u being the EE motion direction there. It sends that cap once and looks again only after the
 // control loop reports the velocity change done and the reached speed was held for
-// `hold_after_slowdown`. When the hand no longer intrudes, it sends the nominal speed to resume.
+// `hold_after_slowdown`. When the hand no longer intrudes, it sends the nominal speed to resume;
+// a resume is not waited for: every frame is still checked, and a slowdown replaces it.
 // The control loop applies a cap by re-planning from its own state (see motion.cpp).
 #pragma once
 
@@ -137,9 +138,12 @@ class Supervisor {
   Shared* shared_;
 
   uint32_t seq_ = 0;
-  uint32_t waiting_for_ = 0;  // command seq whose velocity change we wait for, 0: none
-  bool holding_ = false;      // the command we wait for is a slowdown: hold afterwards
+  uint32_t waiting_for_ = 0;  // slowdown seq whose velocity change and hold we wait for, 0: none
+  bool holding_ = false;      // the last command sent is a slowdown
   uint32_t segment_ = 0;
+  // Cap last commanded for the current segment (nominal until the first command). Compared
+  // against instead of the snapshot's cap, which lags until the control loop applies a command.
+  double target_cap_ = 0.0;
   std::vector<Decision> decisions_;
 };
 
