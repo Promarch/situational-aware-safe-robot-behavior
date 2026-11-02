@@ -9,8 +9,10 @@
 //   --x-down   EE x axis straight down (a part held along x, like the screwdriver, hangs
 //              vertically); the tool z axis becomes horizontal and snaps to the nearest base axis
 //   --z H      move the EE (fingertip center) to height H in the base frame [m]; else keep it
+//   --free-yaw keep the current rotation about the vertical instead of snapping it to a base
+//              axis (for an object that does not lie along a base axis)
 //
-// Usage: record_pose [NAME, default kRecordedJoints] [--x-down] [--z H]
+// Usage: record_pose [NAME, default kRecordedJoints] [--x-down] [--z H] [--free-yaw]
 #include <cmath>
 #include <cstdlib>
 #include <iomanip>
@@ -34,21 +36,25 @@ constexpr double kQ7Limit = 2.8973;
 
 double deg(double rad) { return rad * 180.0 / M_PI; }
 
-// The horizontal base axis (+-x or +-y) closest to v's horizontal part.
-Eigen::Vector3d nearestHorizontalAxis(const Eigen::Vector3d& v) {
-  const double angle = std::round(std::atan2(v.y(), v.x()) / M_PI_2) * M_PI_2;
-  return {std::round(std::cos(angle)), std::round(std::sin(angle)), 0.0};
+// v's horizontal direction, snapped to the closest base axis (+-x or +-y) unless free_yaw.
+Eigen::Vector3d horizontalDirection(const Eigen::Vector3d& v, bool free_yaw) {
+  double angle = std::atan2(v.y(), v.x());
+  if (!free_yaw) angle = std::round(angle / M_PI_2) * M_PI_2;
+  return {std::cos(angle), std::sin(angle), 0.0};
 }
 }  // namespace
 
 int main(int argc, char** argv) {
   std::string name = "kRecordedJoints";
   bool x_down = false;
+  bool free_yaw = false;
   double z_target = NAN;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--x-down") {
       x_down = true;
+    } else if (arg == "--free-yaw") {
+      free_yaw = true;
     } else if (arg == "--z" && i + 1 < argc) {
       z_target = std::atof(argv[++i]);
     } else {
@@ -63,14 +69,14 @@ int main(int argc, char** argv) {
     const Eigen::Matrix3d R = T.linear();
     const Eigen::Vector3d down(0, 0, -1);
 
-    // The snapped orientation: one axis straight down, one along the nearest horizontal base
-    // axis, the third completing a right-handed frame.
+    // The snapped orientation: one axis straight down, one horizontal (along the nearest base
+    // axis unless --free-yaw), the third completing a right-handed frame.
     Eigen::Matrix3d R_target;
     if (x_down) {
-      const Eigen::Vector3d z = nearestHorizontalAxis(R.col(2));
+      const Eigen::Vector3d z = horizontalDirection(R.col(2), free_yaw);
       R_target << down, z.cross(down), z;
     } else {
-      const Eigen::Vector3d x = nearestHorizontalAxis(R.col(0));
+      const Eigen::Vector3d x = horizontalDirection(R.col(0), free_yaw);
       R_target << x, down.cross(x), down;
     }
     Eigen::Affine3d target = Eigen::Affine3d::Identity();
