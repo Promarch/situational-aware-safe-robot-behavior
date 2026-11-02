@@ -15,7 +15,8 @@
 //
 // Usage: calibrate_camera [port=5005]                 record pairs, then fit
 //        calibrate_camera --from calib_pairs.csv      fit from saved pairs
-// Writes calib_pairs.csv (base x,y,z, camera x,y,z per row) and T_base_cam.txt.
+// Writes calib_pairs.csv (base x,y,z, camera x,y,z per row) and T_base_cam.txt into the
+// current directory; the calibration in use is kept in config/.
 #include <algorithm>
 #include <chrono>
 #include <cmath>

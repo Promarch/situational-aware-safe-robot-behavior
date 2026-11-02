@@ -23,29 +23,32 @@ add_library(examples_common STATIC third_party/libfranka/examples/examples_commo
 target_include_directories(examples_common PUBLIC third_party/libfranka/examples)
 target_link_libraries(examples_common PUBLIC Franka::Franka Eigen3::Eigen3)
 
+# --- Libraries (src/)
 # 7-axis jerk-limited S-curve with online re-planning (pure math).
 add_library(s_curve STATIC src/s_curve.cpp)
 target_include_directories(s_curve PUBLIC src)
 target_link_libraries(s_curve PUBLIC Franka::Franka)
 
-# Robot motions and hand-aware speed supervision.
+# Robot motions, hand-aware speed supervision and the UDP hand receiver.
 add_library(robot_motion STATIC src/motion.cpp src/supervision.cpp src/hand_receiver.cpp)
 target_link_libraries(robot_motion PUBLIC s_curve examples_common Threads::Threads)
 
-add_executable(read_state src/read_state.cpp)
+# --- Programs (apps/)
+add_executable(robot_test_slowdown apps/robot_test_slowdown.cpp)
+target_link_libraries(robot_test_slowdown robot_motion)
+
+add_executable(calibrate_camera apps/calibrate_camera.cpp)
+target_link_libraries(calibrate_camera robot_motion)
+
+add_executable(test_hand_receiver apps/test_hand_receiver.cpp)
+target_link_libraries(test_hand_receiver robot_motion)
+
+add_executable(read_state apps/read_state.cpp)
 target_link_libraries(read_state Franka::Franka)
 
+# --- Offline tests (tests/), no robot needed
 add_executable(test_s_curve tests/test_s_curve.cpp)
 target_link_libraries(test_s_curve s_curve)
 
 add_executable(test_replan tests/test_replan.cpp)
 target_link_libraries(test_replan s_curve)
-
-add_executable(robot_test_slowdown tests/robot_test_slowdown.cpp)
-target_link_libraries(robot_test_slowdown robot_motion Threads::Threads)
-
-add_executable(test_hand_receiver tests/test_hand_receiver.cpp)
-target_link_libraries(test_hand_receiver robot_motion)
-
-add_executable(calibrate_camera tests/calibrate_camera.cpp)
-target_link_libraries(calibrate_camera robot_motion)

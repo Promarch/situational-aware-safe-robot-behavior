@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot robot_slowdown.csv from robot_test_slowdown (format in tests/robot_test_slowdown.cpp).
+"""Plot robot_slowdown.csv from robot_test_slowdown (format in apps/robot_test_slowdown.cpp).
 
 Writes two figures next to the log:
   <name>_speed.png   EE speed and energy-limited speed v_safe (every tick), and the EE's
