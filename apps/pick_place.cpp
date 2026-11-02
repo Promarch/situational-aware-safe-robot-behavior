@@ -5,7 +5,9 @@
 // One confirmation at the start, then the whole task runs. Hands come over UDP (hand_udp
 // protocol) from the detector or scripts/replay_hands.py; HandReceiver's thread runs the
 // supervisor on every packet next to libfranka's 1 kHz control loop. While the screwdriver is
-// held, the supervisor's reference point is its tip (kObjectTipOffset below the EE), else the EE.
+// held, the supervisor's reference point is its tip (kObjectTip in the EE frame), else the EE.
+// The screwdriver lies flat and is grasped from above, so it is held along the EE x axis; at the
+// pre-place pose the gripper is turned so that it hangs straight down into the holder.
 // Start the sender first: without a stream the hand position counts as unknown and every motion
 // runs at the energy-limited speed only.
 //
@@ -47,13 +49,14 @@ const scurve::JointLimits kJointLimits = scurve::frankaLimits(0.5, 0.5, 0.005);
 constexpr motion::CartesianLimits kVerticalLimits{0.05, 0.3, 3.0};
 constexpr double kResetSpeedFactor = 0.2;  // MotionGenerator back to the start if not there
 
-// Screwdriver. NaN until measured.
-constexpr double kGraspWidth = NAN;          // handle diameter where it is grasped [m]
+// Screwdriver.
+constexpr double kGraspWidth = 0.017;        // finger distance on the handle [m]
 constexpr double kGraspEpsilon = 0.01;       // accepted deviation from kGraspWidth [m]
-constexpr double kObjectTipOffset = NAN;     // EE (fingertip center) to the tip, along tool z [m]
+const Eigen::Vector3d kObjectTip(0.15, 0.0, 0.0);  // tip in the EE frame [m]
 constexpr double kReleaseClearance = 0.02;   // open this much wider than the handle [m]
 constexpr double kGripperSpeed = 0.05;       // [m/s]
-constexpr double kGraspForce = 15.0;         // [N]
+constexpr double kGraspForce = 20.0;         // [N]
+constexpr double kMinTipClearance = 0.01;    // tip above the table when released, at least [m]
 
 // Segments in the order they run; supervision segment id = index + 1.
 const char* const kSegmentNames[] = {"start->pre-pick", "down to pick", "up from pick",
@@ -72,16 +75,12 @@ int main(int argc, char** argv) {
   supervision::Params params;
   if (argc > 1) params.s_lim = std::atof(argv[1]);
   const auto port = static_cast<uint16_t>(argc > 2 ? std::atoi(argv[2]) : 5005);
-  params.object_tip_offset = kObjectTipOffset;
+  params.object_tip = kObjectTip;
 
-  // Refuse to move with values that were never filled in.
-  const char* missing = std::isnan(poses::kPrePlaceJoints[0]) ? "poses::kPrePlaceJoints (record_pose)"
-                        : std::isnan(poses::kPlaceHeight)     ? "poses::kPlaceHeight"
-                        : std::isnan(kGraspWidth)             ? "kGraspWidth"
-                        : std::isnan(kObjectTipOffset)        ? "kObjectTipOffset"
-                                                              : nullptr;
-  if (missing != nullptr) {
-    std::cerr << "Not configured yet: " << missing << "\n";
+  if (std::isnan(poses::kPrePlaceJoints[0])) {
+    std::cerr << "Not configured yet: poses::kPrePlaceJoints, record it with\n  record_pose "
+                 "kPrePlaceJoints --x-down --z "
+              << poses::kTableZ + poses::kPrePlaceTipHeight + kObjectTip.norm() << "\n";
     return 1;
   }
 
@@ -91,14 +90,35 @@ int main(int argc, char** argv) {
     const franka::Model model = robot.loadModel();
     const franka::RobotState start = robot.readOnce();
     const double z_grasp = poses::kTableZ + poses::kGraspHeight;
-    const double z_place = poses::kTableZ + poses::kPlaceHeight;
 
-    std::cout << "S_lim " << params.s_lim << " J, intrusion radius: hand sphere + "
-              << params.radius_margin * 100 << " cm, horizon " << params.horizon
-              << " s, hold after slowdown " << params.hold_after_slowdown << " s\n"
-              << "grasp at EE height " << z_grasp * 100 << " cm, width " << kGraspWidth * 100
-              << " cm; release at EE height " << z_place * 100 << " cm; object tip "
-              << kObjectTipOffset * 100 << " cm below the EE\n";
+    // Segment ids 1..7 are the supervised motions of the task, in kSegmentNames order.
+    supervision::Shared shared;
+    supervision::Supervisor supervisor(model, start, params, &shared);
+
+    // Where the tip will be, from the model at the recorded pre-place joints.
+    auto pointAt = [&](const scurve::Vec7& q, bool tip) {
+      const std::array<double, 16> T = model.pose(
+          franka::Frame::kEndEffector, q, supervisor.flangeToReference(tip), start.EE_T_K);
+      return Eigen::Vector3d(T[12], T[13], T[14]);
+    };
+    const Eigen::Vector3d ee_pre_place = pointAt(poses::kPrePlaceJoints, false);
+    const Eigen::Vector3d tip_pre_place = pointAt(poses::kPrePlaceJoints, true);
+    const double tip_released = tip_pre_place.z() - poses::kPlaceDescent - poses::kTableZ;
+
+    std::cout << std::fixed << std::setprecision(3) << "S_lim " << params.s_lim
+              << " J, intrusion radius: hand sphere + " << params.radius_margin * 100
+              << " cm, horizon " << params.horizon << " s, hold after slowdown "
+              << params.hold_after_slowdown << " s\n"
+              << "pick: grasp at EE height " << z_grasp * 100 << " cm, width "
+              << kGraspWidth * 100 << " cm, force " << kGraspForce << " N\n"
+              << "place: EE " << ee_pre_place.transpose() << ", tip " << tip_pre_place.transpose()
+              << " -> descend " << poses::kPlaceDescent * 100 << " cm, release with the tip "
+              << tip_released * 100 << " cm above the table\n";
+    if (tip_released < kMinTipClearance) {
+      std::cerr << "Refusing: the tip would end " << tip_released * 100
+                << " cm above the table. Check kPrePlaceJoints and the place heights.\n";
+      return 1;
+    }
 
     if (!confirm("pick and place: home the gripper if needed, return to start, run the whole task")) {
       return 0;
@@ -118,9 +138,7 @@ int main(int argc, char** argv) {
       robot.control(to_start);
     }
 
-    // --- Supervised task. Segment ids 1..7 are the motions below, in kSegmentNames order.
-    supervision::Shared shared;
-    supervision::Supervisor supervisor(model, start, params, &shared);
+    // --- Supervised task.
     motion::TickLog log(300000);  // 5 min of control ticks
     std::vector<Frame> frames;    // written by the receiver thread, read after it stopped
     frames.reserve(20000);
@@ -154,6 +172,7 @@ int main(int argc, char** argv) {
       std::cout << "pre-pick -> pre-place, end error " << err * 1e3 << " mrad\n";
       const double z_pre_place = robot.readOnce().O_T_EE_d[14];
 
+      const double z_place = z_pre_place - poses::kPlaceDescent;
       z = motion::moveVerticalTo(robot, z_place, kVerticalLimits, &shared, &log);
       std::cout << "down to place, z error " << (z - z_place) * 1e3 << " mm\n";
       // Open only a little: the fingers are inside the holder.

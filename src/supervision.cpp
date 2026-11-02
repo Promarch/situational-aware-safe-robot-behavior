@@ -16,9 +16,9 @@ constexpr double kLineStep = 2e-3;  // resolved-rate step along a vertical line 
 Supervisor::Supervisor(const franka::Model& model, const franka::RobotState& state,
                        const Params& params, Shared* shared)
     : model_(model), state_(state), params_(params), shared_(shared) {
-  // F_T_tip = F_T_EE * translation(0, 0, offset): offset along the EE's own z axis.
+  // F_T_tip = F_T_EE * translation(object_tip): the tip expressed along the EE's own axes.
   Eigen::Matrix4d F_T_tip = Eigen::Matrix4d::Map(state.F_T_EE.data());
-  F_T_tip.block<3, 1>(0, 3) += F_T_tip.block<3, 1>(0, 2) * params.object_tip_offset;
+  F_T_tip.block<3, 1>(0, 3) += F_T_tip.topLeftCorner<3, 3>() * params.object_tip;
   Eigen::Matrix4d::Map(F_T_tip_.data()) = F_T_tip;
 }
 

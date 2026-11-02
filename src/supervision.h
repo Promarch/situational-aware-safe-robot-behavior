@@ -64,9 +64,9 @@ struct Params {
   // sphere radius sent by the detector plus this margin [m].
   double radius_margin = 0.01;
   // While an object is held, the reference point for the intrusion test and the energy limit is
-  // its far end: this far from the EE (fingertip center) along the tool z axis [m]. Otherwise it
-  // is the EE itself.
-  double object_tip_offset = 0.0;
+  // its far end, at this position in the EE frame (fingertip center; x, y, z along the EE's own
+  // axes) [m]. Otherwise it is the EE itself.
+  Eigen::Vector3d object_tip = Eigen::Vector3d::Zero();
   double s_lim = 0.05;    // transferable energy limit [J]
   double hold_after_slowdown = 0.3;  // no detection for this long once a slowdown is done [s]
 };
@@ -128,7 +128,7 @@ class Supervisor {
 
   const franka::Model& model_;
   franka::RobotState state_;  // F_T_EE, EE_T_K and load for the model
-  std::array<double, 16> F_T_tip_;  // F_T_EE moved to the held object's far end
+  std::array<double, 16> F_T_tip_;  // F_T_EE * translation(object_tip)
   Params params_;
   Shared* shared_;
 
