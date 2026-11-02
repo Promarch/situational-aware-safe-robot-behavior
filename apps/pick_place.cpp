@@ -15,8 +15,9 @@
 // Writes, then plot with  python3 ../scripts/plot_slowdown.py pick_place.csv
 //   pick_place.csv, one row per control tick:
 //     t, segment (0..6, see kSegmentNames), t_segment,
-//     ee_speed = |J(q) dq| of the reference point [m/s], v_safe there along its motion
-//     direction, m_eff = effective mass there along that direction [kg] (v_safe =
+//     ee_speed = |J(q) dq| of the reference point (measured dq) [m/s], v_safe there along its
+//     commanded motion direction (J(q) dq_d),
+//     m_eff = effective mass there along that direction [kg] (v_safe =
 //     sqrt(2 S_lim / m_eff); both empty at rest), hand_present (a hand seen, or position unknown),
 //     hand_unlocated (position unknown or stream stale), hand_clearance (reference point to the
 //     nearest located hand's intrusion boundary, sphere radius + margin; < 0 inside),
@@ -273,15 +274,21 @@ int main(int argc, char** argv) {
       const std::array<double, 16>& F_T_ref = supervisor.flangeToReference(at_tip);
       const Jacobian J = Eigen::Map<const Jacobian>(
           model.zeroJacobian(franka::Frame::kEndEffector, r.q, F_T_ref, start.EE_T_K).data());
+      // Speed from the measured joint velocities; the motion direction for m_eff and v_safe from
+      // the commanded ones, which are smooth (like the planned direction the supervisor uses),
+      // while measurement noise swings the direction of a slow motion.
       const Eigen::Vector3d v =
           J.topRows<3>() * Eigen::Map<const Eigen::Matrix<double, 7, 1>>(r.dq.data());
+      const Eigen::Vector3d v_d =
+          J.topRows<3>() * Eigen::Map<const Eigen::Matrix<double, 7, 1>>(r.dq_d.data());
       const double speed = v.norm();
+      const double speed_d = v_d.norm();
       csv << r.t << "," << r.segment << "," << r.t_segment << "," << speed << ",";
-      if (speed > 1e-4) {  // no motion direction at rest
-        const Eigen::Vector3d u = v / speed;
+      if (speed_d > 1e-4) {  // no motion direction at rest
+        const Eigen::Vector3d u = v_d / speed_d;
         const double m_eff = supervisor.effectiveMass(r.q, u, at_tip);
         csv << supervisor.safeSpeed(r.q, u, at_tip) << "," << m_eff;
-        if (r.segment >= 0 && r.segment < kNumSegments && speed > 0.01) {  // skip near-rest noise
+        if (r.segment >= 0 && r.segment < kNumSegments && speed_d > 0.01) {  // skip near rest
           m_eff_min[r.segment] = std::min(m_eff_min[r.segment], m_eff);
           m_eff_max[r.segment] = std::max(m_eff_max[r.segment], m_eff);
         }
