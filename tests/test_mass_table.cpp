@@ -62,6 +62,13 @@ int main() {
     std::ofstream f("mass_table_bad.csv");
     f << "0.3,0.0,1.0\n0.5,0.0,1.0\n0.3,0.1,1.0\n";  // (0.5, 0.1) missing
   }
+  {
+    std::ofstream f("mass_table_header.csv");  // header and BOM, as exported by a spreadsheet
+    f << "\xEF\xBB\xBF" << "az,z,m\n0.3,0.0,1.0\n0.5,0.0,2.0\n0.3,0.1,3.0\n0.5,0.1,4.0\n";
+  }
+  expect(MassTable::load("mass_table_header.csv").lookup(0.4, 0.05), 4.0,
+         "header line and UTF-8 BOM skipped");
+
   expectThrow("mass_table_bad.csv", "incomplete grid");
   expectThrow("does_not_exist.csv", "missing file");
 

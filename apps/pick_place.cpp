@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
 
   try {
     // Reflected mass for a hand trapped against the table (see mass_table.h).
-    const std::string mass_table_path = std::string(PROJECT_DIR) + "/config/reflected_mass.csv";
+    const std::string mass_table_path = std::string(PROJECT_DIR) + "/config/constrained_collision_mass.csv";
     const MassTable mass_table = MassTable::load(mass_table_path);
     params.constrained_mass = &mass_table;
     std::cout << "constrained reflected mass: " << mass_table.cols() << " x " << mass_table.rows()

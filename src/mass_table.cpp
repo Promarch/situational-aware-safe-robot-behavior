@@ -1,6 +1,7 @@
 #include "mass_table.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <sstream>
@@ -33,8 +34,14 @@ MassTable MassTable::load(const std::string& path) {
   std::vector<Row> rows;
   std::string line;
   for (int number = 1; std::getline(in, line); ++number) {
+    if (number == 1 && line.rfind("\xEF\xBB\xBF", 0) == 0) line.erase(0, 3);  // UTF-8 BOM
     line = line.substr(0, line.find('#'));
     if (line.find_first_not_of(" \t\r") == std::string::npos) continue;
+    // A header line (e.g. "az,z,m") starts with a letter.
+    if (rows.empty() && std::isalpha(static_cast<unsigned char>(
+                            line[line.find_first_not_of(" \t")]))) {
+      continue;
+    }
     std::replace(line.begin(), line.end(), ',', ' ');
     std::istringstream f(line);
     Row row;
