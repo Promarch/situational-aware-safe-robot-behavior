@@ -110,11 +110,15 @@ double Supervisor::evaluate(const Snapshot& s, const HandObservation& hands, boo
       intruding[h] |= (p - hand.center).norm() < hand.radius + params_.radius_margin;
     }
   }
+  // Only a downward vertical motion can trap a hand against the table; every other motion
+  // (joint motions in the air, moving up) is a free contact, also with the hand position unknown.
   Contact contact = Contact::kFree;
-  for (int h = 0; h < hands.n_hands; ++h) {
-    if (intruding[h] && nearTable(hands.hands[h])) contact = Contact::kConstrained;
+  if (s.vertical && s.direction < 0.0) {
+    for (int h = 0; h < hands.n_hands; ++h) {
+      if (intruding[h] && nearTable(hands.hands[h])) contact = Contact::kConstrained;
+    }
+    if (hands.unlocated) contact = Contact::kUnknown;
   }
-  if (hands.unlocated) contact = Contact::kUnknown;
   *contact_out = contact;
   *intrusion = hands.unlocated || std::any_of(intruding, intruding + hands.n_hands,
                                               [](bool b) { return b; });

@@ -19,8 +19,8 @@
 //     commanded motion direction (J(q) dq_d),
 //     m_eff = the model's effective mass there along that direction [kg], m_limit = the mass
 //     the energy limit used (v_safe = sqrt(2 S_lim / m_limit); all three empty at rest),
-//     contact (0 free: m_eff, 1 hand near the table: tabulated mass, 2 hand position unknown:
-//     the larger), hand_present (a hand seen, or position unknown),
+//     contact (0 free: m_eff, 1 hand near the table while moving down: tabulated mass, 2 hand
+//     position unknown while moving down: the larger), hand_present (a hand seen, or position unknown),
 //     hand_unlocated (position unknown or stream stale), hand_clearance (reference point to the
 //     nearest located hand's intrusion boundary, sphere radius + margin; < 0 inside),
 //     dq1..dq7 measured, dq_d1..dq_d7 commanded [rad/s], tau_ext1..tau_ext7 estimated external
@@ -53,7 +53,7 @@ namespace {
 constexpr const char* kRobotIp = "192.168.3.8";
 
 const scurve::JointLimits kJointLimits = scurve::frankaLimits(0.5, 0.5, 0.005);
-constexpr motion::CartesianLimits kVerticalLimits{0.05, 0.3, 3.0};
+constexpr motion::CartesianLimits kVerticalLimits{0.10, 0.3, 3.0};
 constexpr double kResetSpeedFactor = 0.2;  // MotionGenerator back to the start if not there
 
 // Screwdriver.
@@ -86,6 +86,9 @@ constexpr std::array<double, 6> kCartesianImpedance = {{3000, 3000, 3000, 300, 3
 const char* const kMotionNames[] = {"start->pre-pick", "down to pick", "up from pick",
                                     "pre-pick->pre-place", "down to place", "up from place",
                                     "pre-place->start"};
+// Motions that can trap a hand against the table (constrained contact): the two moving down.
+bool movesDown(int motion) { return motion == 1 || motion == 4; }
+
 struct Frame {
   double t;  // TickLog clock [s]
   supervision::HandObservation hands;
@@ -300,20 +303,23 @@ int main(int argc, char** argv) {
           J.topRows<3>() * Eigen::Map<const Eigen::Matrix<double, 7, 1>>(r.dq_d.data());
       const double speed = v.norm();
       const double speed_d = v_d.norm();
-      // Contact as the supervisor sees it, for the current reference point: unknown without a
-      // position, constrained for a hand near the table within its intrusion distance.
+      // Contact as the supervisor sees it, for the current reference point: only while moving
+      // down, unknown without a position, constrained for a hand near the table within its
+      // intrusion distance.
       const std::array<double, 16> T_ref =
           model.pose(franka::Frame::kEndEffector, r.q, F_T_ref, start.EE_T_K);
       const Eigen::Vector3d p_ref(T_ref[12], T_ref[13], T_ref[14]);
       supervision::Contact contact = supervision::Contact::kFree;
-      for (int h = 0; h < hands_now.n_hands; ++h) {
-        const supervision::HandSphere& hand = hands_now.hands[h];
-        if (supervisor.nearTable(hand) &&
-            (p_ref - hand.center).norm() < hand.radius + params.radius_margin) {
-          contact = supervision::Contact::kConstrained;
+      if (movesDown(r.motion)) {
+        for (int h = 0; h < hands_now.n_hands; ++h) {
+          const supervision::HandSphere& hand = hands_now.hands[h];
+          if (supervisor.nearTable(hand) &&
+              (p_ref - hand.center).norm() < hand.radius + params.radius_margin) {
+            contact = supervision::Contact::kConstrained;
+          }
         }
+        if (hands_now.unlocated) contact = supervision::Contact::kUnknown;
       }
-      if (hands_now.unlocated) contact = supervision::Contact::kUnknown;
       csv << r.t << "," << r.motion << "," << r.t_motion << "," << speed << ",";
       if (speed_d > 1e-4) {  // no motion direction at rest
         const Eigen::Vector3d u = v_d / speed_d;

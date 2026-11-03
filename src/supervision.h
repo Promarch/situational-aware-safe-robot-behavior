@@ -74,9 +74,10 @@ struct Params {
   Eigen::Vector3d object_tip = Eigen::Vector3d::Zero();
   double s_lim = 0.01;    // transferable energy limit [J]
   double hold_after_slowdown = 0.3;  // no detection for this long once a slowdown is done [s]
-  // A hand trapped against the table cannot move away: when an intruding hand's center is at most
-  // `constrained_band` above the table, the energy limit uses the reflected mass tabulated in
-  // `constrained_mass` at the EE position instead of the model's effective mass.
+  // A hand trapped against the table cannot move away: during a downward vertical motion, when an
+  // intruding hand's center is at most `constrained_band` above the table, the energy limit uses
+  // the reflected mass tabulated in `constrained_mass` at the EE position instead of the model's
+  // effective mass. Other motions are always free contacts.
   double table_z = 0.0;            // table surface in the base frame [m]
   double constrained_band = 0.05;  // [m]
   const MassTable* constrained_mass = nullptr;  // must outlive the supervisor
@@ -86,7 +87,7 @@ struct Params {
 enum class Contact {
   kFree,         // the hand can move away: the model's effective mass
   kConstrained,  // the hand is near the table: the tabulated reflected mass
-  kUnknown,      // the hand's position is unknown: the larger of the two
+  kUnknown,      // the hand's position is unknown (downward motion): the larger of the two
 };
 
 // Hands of one camera frame, as the detector sends them (hand_udp protocol, udp-implementation
