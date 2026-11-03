@@ -20,6 +20,13 @@ Usage:
 
 Debug:   python3 udp_examples/udp_listener.py --port 5005     (in a second terminal)
 
+Robot overlay (with --extrinsic): --robot-port 5006 receives pick_place's supervisor view
+(robot_overlay_protocol.py) and draws it into the image: the robot's reference point (red), its
+predicted path over the next 0.5 s as a translucent tube (yellow, orange while slowed down) and the hand status
+(skeleton orange: intrudes, free contact; magenta: intrudes near the table while the robot moves
+down = constrained contact). --record out.mp4 writes the annotated colour image to a video,
+also with --no-gui.
+
 Install (Python 3.10-3.12): pyrealsense2 mediapipe opencv-python numpy
 hand_udp_protocol.py must be in the same directory. Run from the repo root.
 
@@ -28,6 +35,8 @@ NOTE: the camera can only be opened by ONE process. Stop realsense-viewer or
 the realsense2_camera ROS node before running this.
 """
 import argparse
+import shutil
+import subprocess
 import time
 import urllib.request
 from pathlib import Path
@@ -40,6 +49,7 @@ from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
 
 import hand_udp_protocol as hup                     # python udp_examples/<script>.py
+import robot_overlay_protocol as rop
 
 # --------------------------------------------------------------------------- config
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
@@ -79,6 +89,13 @@ def parse_args():
     p.add_argument("--extrinsic", type=Path, default=None,
                    help="4x4 homogeneous T_base_cam (text, np.loadtxt format). Points are "
                         "then sent in the robot base frame (frame_id=1) instead of the camera frame.")
+    p.add_argument("--robot-port", type=int, default=None,
+                   help="UDP port for the robot overlay from pick_place (e.g. 5006); needs "
+                        "--extrinsic to project robot base frame points into the image")
+    p.add_argument("--tube-radius", type=float, default=0.03, metavar="M",
+                   help="radius of the drawn predicted-path tube [m] (default 0.03)")
+    p.add_argument("--record", type=Path, default=None, metavar="OUT.mp4",
+                   help="write the annotated colour image to this video file")
     p.add_argument("--no-gui", action="store_true",
                    help="no OpenCV window (saves a few ms per frame, needed when headless)")
     return p.parse_args()
@@ -121,6 +138,112 @@ def sample_depth(depth_m: np.ndarray, u: int, v: int):
     return float(np.percentile(valid, DEPTH_PERCENTILE))
 
 
+# Robot overlay colours (BGR).
+COLOR_TIP = (0, 0, 255)            # red: reference point (EE, or the held object's tip)
+COLOR_PATH = (0, 255, 255)         # yellow: predicted path
+COLOR_PATH_SLOWED = (0, 140, 255)  # orange: predicted path while slowed down
+COLOR_HAND = {rop.HAND_INTRUDING: (0, 165, 255),     # orange: intrudes, free contact
+              rop.HAND_CONSTRAINED: (255, 0, 255)}   # magenta: constrained contact
+HAND_MATCH_M = 0.15   # a detected hand is the robot's hand when their centres are this close
+
+
+TUBE_ALPHA = 0.4      # opacity of the predicted-path tube
+
+
+def project(T_cam_base: np.ndarray, intr, p_base: np.ndarray, radius: float = 0.0):
+    """Pixel (u, v) of a robot base frame point, None if behind the camera; with `radius`
+    [m], ((u, v), pixel radius of a sphere of that radius there)."""
+    p = T_cam_base[:3, :3] @ p_base + T_cam_base[:3, 3]
+    if p[2] < 0.05:
+        return None
+    u, v = rs.rs2_project_point_to_pixel(intr, [float(p[0]), float(p[1]), float(p[2])])
+    uv = int(round(u)), int(round(v))
+    if not radius:
+        return uv
+    return uv, max(1, int(round(intr.fx * radius / p[2])))
+
+
+def draw_tube(bgr: np.ndarray, circles, color) -> None:
+    """Translucent tube through projected spheres [((u, v), r), ...]: a disc per sphere and the
+    trapezoid between neighbours, blended once so that overlaps do not darken."""
+    mask = np.zeros(bgr.shape[:2], np.uint8)
+    for (c, r) in circles:
+        cv2.circle(mask, c, r, 255, -1, cv2.LINE_AA)
+    for (c0, r0), (c1, r1) in zip(circles, circles[1:]):
+        d = np.subtract(c1, c0).astype(np.float64)
+        n = np.linalg.norm(d)
+        if n < 1e-6:
+            continue
+        nrm = np.array([-d[1], d[0]]) / n
+        quad = np.array([c0 + nrm * r0, c1 + nrm * r1, c1 - nrm * r1, c0 - nrm * r0])
+        cv2.fillConvexPoly(mask, np.round(quad).astype(np.int32), 255, cv2.LINE_AA)
+    a = (mask.astype(np.float32) * (TUBE_ALPHA / 255.0))[..., None]
+    bgr[:] = (bgr * (1.0 - a) + np.array(color, np.float32) * a).astype(np.uint8)
+    contours, _ = cv2.findContours((mask > 127).astype(np.uint8), cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(bgr, contours, -1, color, 1, cv2.LINE_AA)
+
+
+def hand_status(overlay, center_base: np.ndarray) -> int:
+    """Status the robot gave the hand nearest to this detected hand (its previous frame)."""
+    if overlay is None or not overlay.hands or not np.all(np.isfinite(center_base)):
+        return rop.HAND_CLEAR
+    d = [np.linalg.norm(h.center - center_base) for h in overlay.hands]
+    k = int(np.argmin(d))
+    return overlay.hands[k].status if d[k] < HAND_MATCH_M else rop.HAND_CLEAR
+
+
+def draw_robot(bgr: np.ndarray, overlay, T_cam_base: np.ndarray, intr,
+               tube_radius: float) -> None:
+    if overlay is None:
+        cv2.putText(bgr, "robot: no overlay", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                    (0, 0, 255), 2, cv2.LINE_AA)
+        return
+    if not overlay.valid:
+        return
+    if overlay.moving and len(overlay.predicted):
+        circles = [project(T_cam_base, intr, p, tube_radius) for p in overlay.predicted]
+        circles = [c for c in circles if c is not None]
+        if circles:
+            draw_tube(bgr, circles, COLOR_PATH_SLOWED if overlay.slowed else COLOR_PATH)
+    tip = project(T_cam_base, intr, overlay.reference)
+    if tip is not None:
+        cv2.circle(bgr, tip, 7, COLOR_TIP, -1, cv2.LINE_AA)
+        cv2.circle(bgr, tip, 8, (255, 255, 255), 1, cv2.LINE_AA)
+    text = ("robot: " + ("moving" if overlay.moving else "at rest") +
+            ("  object tip" if overlay.holding_object else "  EE"))
+    color = (0, 255, 0)
+    if overlay.slowed:
+        text += (f"  SLOWED {overlay.cap_fraction * 100:.0f}%  "
+                 f"{rop.CONTACT_NAMES.get(overlay.contact, '?')} contact")
+        color = COLOR_HAND[rop.HAND_CONSTRAINED] if overlay.contact != rop.CONTACT_FREE \
+            else COLOR_PATH_SLOWED
+    if overlay.unlocated:
+        text += "  hand position unknown"
+    cv2.putText(bgr, text, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA)
+
+
+class VideoWriter:
+    """H.264 video through the system ffmpeg (crf 18: visually near lossless). OpenCV's own
+    mp4v encoder blurs and blocks the 640x480 image badly."""
+
+    def __init__(self, path: Path, w: int, h: int, fps: int):
+        if shutil.which("ffmpeg") is None:
+            raise SystemExit("--record needs ffmpeg (apt install ffmpeg)")
+        self._proc = subprocess.Popen(
+            ["ffmpeg", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
+             "-s", f"{w}x{h}", "-r", str(fps), "-i", "-", "-c:v", "libx264", "-preset",
+             "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", str(path)],
+            stdin=subprocess.PIPE)
+
+    def write(self, bgr: np.ndarray) -> None:
+        self._proc.stdin.write(np.ascontiguousarray(bgr).tobytes())
+
+    def release(self) -> None:
+        self._proc.stdin.close()
+        self._proc.wait()
+
+
 def capture_time_ns(color_frame, arrival_ns: int) -> int:
     """Best estimate of when the image was exposed, in CLOCK_REALTIME ns.
 
@@ -146,6 +269,14 @@ def main() -> None:
     sender = hup.HandUdpSender(dests, frame_id)
     print(f"Streaming to {', '.join(f'{h}:{p}' for h, p in dests)}  "
           f"frame={hup.FRAME_NAMES[frame_id]}")
+
+    if args.robot_port is not None and T_base_cam is None:
+        raise SystemExit("--robot-port needs --extrinsic (robot points are in the base frame)")
+    T_cam_base = np.linalg.inv(T_base_cam) if T_base_cam is not None else None
+    robot_rx = rop.OverlayReceiver(args.robot_port) if args.robot_port is not None else None
+    if robot_rx is not None:
+        print(f"Robot overlay from UDP port {args.robot_port}")
+    writer = None
 
     ensure_model()
 
@@ -209,6 +340,7 @@ def main() -> None:
             infer_ms = (time.perf_counter() - t_inf) * 1000
 
             hands_out = []          # what goes into the UDP packet
+            overlay = robot_rx.latest() if robot_rx is not None else None
             closest_overall = None
             for i, landmarks in enumerate(result.hand_landmarks):
                 cat = result.handedness[i][0]
@@ -259,9 +391,13 @@ def main() -> None:
                                           cat.score, r_sphere, pts_out))
 
                 # ---- drawing (red joints = no valid depth there, blue = landmark sent via UDP)
+                # Skeleton white, or in the robot's status colour for this hand.
+                hstatus = (hand_status(overlay, pts_out[0].astype(np.float64))
+                           if T_base_cam is not None and n_valid else rop.HAND_CLEAR)
+                bone = COLOR_HAND.get(hstatus, (255, 255, 255))
                 for a, b in HAND_CONNECTIONS:
                     if pix[a] and pix[b]:
-                        cv2.line(bgr, pix[a], pix[b], (255, 255, 255), 2)
+                        cv2.line(bgr, pix[a], pix[b], bone, 4 if hstatus else 2)
                 for j, (p, ok) in enumerate(zip(pix, valid_mask)):
                     if p:
                         if j == idx:
@@ -271,6 +407,10 @@ def main() -> None:
                         cv2.circle(bgr, p, 4, color, -1)
 
                 label = f"{cat.category_name} {cat.score:.2f}  depth ok {n_valid}/21"
+                if hstatus == rop.HAND_CONSTRAINED:
+                    label = "CONSTRAINED  " + label
+                elif hstatus == rop.HAND_INTRUDING:
+                    label = "INTRUDING  " + label
                 if n_valid:
                     dists = np.linalg.norm(pts_cam[valid_mask], axis=1)  # to camera, for display only
                     dist = float(dists.min())
@@ -294,9 +434,19 @@ def main() -> None:
             if sender.n_errors:
                 status += f"  send errors {sender.n_errors}"
 
-            if not args.no_gui:
+            if robot_rx is not None:
+                draw_robot(bgr, overlay, T_cam_base, color_intr, args.tube_radius)
+            if not args.no_gui or args.record is not None:
                 cv2.putText(bgr, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                             (0, 255, 0), 2, cv2.LINE_AA)
+            if args.record is not None:
+                cv2.putText(bgr, time.strftime("%H:%M:%S") + f"  seq {seq}", (10, h - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+                if writer is None:
+                    writer = VideoWriter(args.record, w, h, FPS)
+                writer.write(bgr)
+
+            if not args.no_gui:
                 # Colourised depth next to RGB: you will SEE holes (black) around hands.
                 depth_vis = cv2.applyColorMap(
                     cv2.convertScaleAbs(np.clip(depth_m, 0, MAX_VALID_DEPTH_M),
@@ -318,6 +468,12 @@ def main() -> None:
         if sender.last_error:
             print(f"last send error: {sender.last_error}")
         sender.close()
+        if writer is not None:
+            writer.release()
+            print(f"video: {args.record}")
+        if robot_rx is not None:
+            print(f"robot overlay: {robot_rx.received} packets, {robot_rx.bad} malformed")
+            robot_rx.close()
         landmarker.close()
         pipeline.stop()
         if not args.no_gui:   # would raise with opencv-python-headless
