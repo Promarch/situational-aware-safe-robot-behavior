@@ -45,6 +45,10 @@ target_link_libraries(calibrate_camera robot_motion)
 add_executable(test_hand_receiver apps/test_hand_receiver.cpp)
 target_link_libraries(test_hand_receiver robot_motion)
 
+add_executable(compare_mass apps/compare_mass.cpp)
+target_link_libraries(compare_mass robot_motion)
+target_compile_definitions(compare_mass PRIVATE PROJECT_DIR="${CMAKE_SOURCE_DIR}")
+
 add_executable(record_pose apps/record_pose.cpp)
 target_link_libraries(record_pose robot_motion)
 

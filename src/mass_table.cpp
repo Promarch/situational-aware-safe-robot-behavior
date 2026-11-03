@@ -10,9 +10,8 @@
 namespace {
 constexpr double kTol = 1e-9;  // grid values closer than this are the same
 
-// Index i with grid[i] <= x <= grid[i + 1], or -1 outside the grid.
+// Index i of the cell grid[i] <= x <= grid[i + 1]; outside the grid, the edge cell nearest to x.
 int cellIndex(const std::vector<double>& grid, double x) {
-  if (grid.size() < 2 || x < grid.front() - kTol || x > grid.back() + kTol) return -1;
   const auto it = std::upper_bound(grid.begin(), grid.end(), x);
   const int i = static_cast<int>(it - grid.begin()) - 1;
   return std::min(std::max(i, 0), static_cast<int>(grid.size()) - 2);
@@ -83,7 +82,6 @@ MassTable MassTable::load(const std::string& path) {
 double MassTable::lookup(double r, double z) const {
   const int ir = cellIndex(r_, r);
   const int iz = cellIndex(z_, z);
-  if (ir < 0 || iz < 0) return max_mass_;  // outside the grid: most conservative
   const size_t n = r_.size();
   return std::max({m_[iz * n + ir], m_[iz * n + ir + 1], m_[(iz + 1) * n + ir],
                    m_[(iz + 1) * n + ir + 1]});

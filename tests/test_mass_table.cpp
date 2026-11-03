@@ -47,8 +47,8 @@ int main() {
   expect(t.lookup(0.6, 0.05), 5.0, "inside the right cell -> max of 5, 1, 1.5, 4");
   expect(t.lookup(0.3, 0.0), 5.0, "on the corner (0.3, 0.0) -> its cell");
   expect(t.lookup(0.7, 0.1), 5.0, "on the far corner -> last cell");
-  expect(t.lookup(0.2, 0.05), 5.0, "r below the grid -> table max");
-  expect(t.lookup(0.4, 0.2), 5.0, "z above the grid -> table max");
+  expect(t.lookup(0.2, 0.05), 5.0, "r below the grid -> nearest (left) cell");
+  expect(t.lookup(0.9, 0.05), 5.0, "r above the grid -> nearest (right) cell");
 
   {
     std::ofstream f("mass_table_test2.csv");  // only the right cell differs from above
@@ -57,6 +57,9 @@ int main() {
   const MassTable t2 = MassTable::load("mass_table_test2.csv");
   expect(t2.lookup(0.35, 0.02), 1.0, "a low cell does not take the high neighbouring cell");
   expect(t2.lookup(0.65, 0.02), 2.5, "the cell with the high corner");
+  expect(t2.lookup(0.35, -0.5), 1.0, "z below the grid -> nearest low cell, not the table max");
+  expect(t2.lookup(0.35, 0.9), 1.0, "z above the grid -> nearest low cell, not the table max");
+  expect(t2.lookup(0.9, 0.9), 2.5, "beyond both -> the corner cell");
 
   {
     std::ofstream f("mass_table_bad.csv");

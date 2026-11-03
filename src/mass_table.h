@@ -5,7 +5,7 @@
 // between the base x axis and the EE position, so az = sqrt(x^2 + y^2).
 //
 // The table is not monotonic, so a lookup takes the largest mass of the four grid points around
-// (r, z); outside the grid it returns the largest mass of the whole table.
+// (r, z). Outside the grid it uses the nearest data: the edge cell nearest to (r, z).
 //
 // File: CSV, one "r,z,m" row per grid point [m, m, kg]; an optional header line (e.g. "az,z,m")
 // and a UTF-8 BOM are skipped, '#' starts a comment. Every combination of the r and z values that
