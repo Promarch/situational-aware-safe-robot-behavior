@@ -1,5 +1,8 @@
 // Reflected mass of the robot for a hand trapped against the table, tabulated over the EE
-// position: horizontal distance r from the base axis and height z above the table.
+// position: horizontal distance r from the base axis and height z above the table. The mass is
+// about rotationally symmetric around the base z axis, so the angle about it does not matter.
+// The table file calls r "az": x = az * cos(alpha), y = az * sin(alpha), alpha being the angle
+// between the base x axis and the EE position, so az = sqrt(x^2 + y^2).
 //
 // The table is not monotonic, so a lookup takes the largest mass of the four grid points around
 // (r, z); outside the grid it returns the largest mass of the whole table.
