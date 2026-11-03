@@ -13,10 +13,10 @@
 // a 4x4 text file for hand_detect_udp.py --extrinsic. Each pair's residual is printed; remove bad
 // pairs from the pairs file and refit with --from.
 //
-// Usage: calibrate_camera [port=5005]                 record pairs, then fit
-//        calibrate_camera --from calib_pairs.csv      fit from saved pairs
-// Writes calib_pairs.csv (base x,y,z, camera x,y,z per row) and T_base_cam.txt into the
-// current directory; the calibration in use is kept in config/.
+// Usage: calibrate_camera [port=5005]                          record pairs, then fit
+//        calibrate_camera --from ../config/calib_pairs.csv     fit from saved pairs
+// Writes config/calib_pairs.csv (base x,y,z, camera x,y,z per row) and config/T_base_cam.txt,
+// the calibration in use (hand_detect_udp.py --extrinsic), replacing the previous ones.
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -39,6 +39,7 @@
 #include "hand_receiver.h"
 
 namespace {
+const std::string kConfigDir = std::string(PROJECT_DIR) + "/config/";
 constexpr const char* kRobotIp = "192.168.3.8";
 constexpr double kKnuckleRadius = 0.10;   // detector's radius when it sends landmark 9
 constexpr double kSampleSeconds = 1.0;
@@ -89,12 +90,18 @@ bool fitAndWrite(const std::vector<Pair>& pairs) {
             << "\ncamera viewing direction (z) in the base frame: "
             << T.block<3, 1>(0, 2).transpose() << "\n";
 
-  std::ofstream out("T_base_cam.txt");
+  const std::string path = kConfigDir + "T_base_cam.txt";
+  std::ofstream out(path);
+  if (!out) {
+    std::cerr << "cannot write " << path << "\n";
+    return false;
+  }
   out << std::setprecision(9);
   for (int r = 0; r < 4; ++r) {
     for (int c = 0; c < 4; ++c) out << T(r, c) << (c < 3 ? " " : "\n");
   }
-  std::cout << "Wrote T_base_cam.txt (for hand_detect_udp.py --extrinsic)\n";
+  std::cout << "Wrote " << path << " (for hand_detect_udp.py --extrinsic; restart the "
+               "detector to use it)\n";
   return true;
 }
 
@@ -145,7 +152,8 @@ int main(int argc, char** argv) {
         std::chrono::milliseconds(100), /*accept_any_frame=*/true);
 
     std::vector<Pair> pairs;
-    std::ofstream pairs_file("calib_pairs.csv");
+    const std::string pairs_path = kConfigDir + "calib_pairs.csv";
+    std::ofstream pairs_file(pairs_path);
     pairs_file << "# base_x,base_y,base_z,cam_x,cam_y,cam_z  [m]\n" << std::setprecision(6);
     std::cout << "Listening on UDP port " << port << ". Run the detector WITHOUT --extrinsic.\n";
 
@@ -204,7 +212,7 @@ int main(int argc, char** argv) {
                  << std::flush;
     }
 
-    std::cout << "\n" << pairs.size() << " pairs saved to calib_pairs.csv\n";
+    std::cout << "\n" << pairs.size() << " pairs saved to " << pairs_path << "\n";
     return fitAndWrite(pairs) ? 0 : 1;
   } catch (const std::exception& e) {
     std::cerr << "exception: " << e.what() << "\n";

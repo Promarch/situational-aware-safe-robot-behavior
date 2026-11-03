@@ -41,6 +41,7 @@ target_compile_definitions(pick_place PRIVATE PROJECT_DIR="${CMAKE_SOURCE_DIR}")
 
 add_executable(calibrate_camera apps/calibrate_camera.cpp)
 target_link_libraries(calibrate_camera robot_motion)
+target_compile_definitions(calibrate_camera PRIVATE PROJECT_DIR="${CMAKE_SOURCE_DIR}")
 
 add_executable(test_hand_receiver apps/test_hand_receiver.cpp)
 target_link_libraries(test_hand_receiver robot_motion)
