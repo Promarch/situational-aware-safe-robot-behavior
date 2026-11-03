@@ -19,6 +19,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 #include <Eigen/Core>
@@ -107,6 +108,27 @@ struct HandObservation {
   bool unlocated = false;
 };
 
+// How the supervisor sees one hand in the current frame.
+enum class HandStatus : uint8_t {
+  kClear,        // no predicted reference point comes within its intrusion radius
+  kIntruding,    // intrudes, free contact
+  kConstrained,  // intrudes near the table during a downward motion
+};
+
+// What the supervisor saw in one camera frame, for display only (the detector's video overlay).
+struct Overlay {
+  bool valid = false;           // the control loop has published a state
+  bool moving = false;          // a supervised motion runs: `predicted` is set
+  bool holding_object = false;  // reference point is the object's far end, else the EE
+  bool slowed = false;          // the last cap sent for this motion is a slowdown
+  Contact contact = Contact::kFree;  // contact that slowdown was computed for
+  double cap_fraction = 1.0;         // that cap / nominal speed
+  Eigen::Vector3d reference = Eigen::Vector3d::Zero();  // current reference point, base frame
+  std::vector<Eigen::Vector3d> predicted;  // reference point every sample_dt over the horizon
+  HandObservation hands;
+  std::array<HandStatus, kMaxHands> status{};
+};
+
 // One command sent by the supervisor.
 struct Decision {
   uint32_t motion_id;
@@ -124,6 +146,9 @@ class Supervisor {
 
   // Handles one camera frame.
   void onFrame(const HandObservation& hands);
+
+  // Called at the end of every onFrame with what the supervisor saw (display only).
+  void setOverlaySink(std::function<void(const Overlay&)> sink) { overlay_sink_ = std::move(sink); }
 
   // Effective (reflected) mass of the robot at the reference point in direction u (unit, base
   // frame): m_eff = 1 / (u^T [J M^-1 J^T]_pos u), J and M from libfranka's model at q [kg].
@@ -160,10 +185,20 @@ class Supervisor {
   Eigen::Matrix<double, 7, 1> verticalJointRate(const scurve::Vec7& q, double direction) const;
   // Tabulated reflected mass at the EE position of configuration q.
   double tabulatedMass(const scurve::Vec7& q) const;
+  // Joints over the horizon, every sample_dt, from the snapshot's motion.
+  std::vector<scurve::Vec7> predict(const Snapshot& s) const;
+  // Reference point (base frame) at configuration q.
+  Eigen::Vector3d referencePoint(const scurve::Vec7& q, bool at_object_tip) const;
+  // Status of every hand against the predicted joints qs.
+  std::array<HandStatus, kMaxHands> classify(const Snapshot& s, const std::vector<scurve::Vec7>& qs,
+                                             bool at_object_tip,
+                                             const HandObservation& hands) const;
   // Speed cap in the snapshot's units; sets *intrusion and the *contact it was computed for.
   double evaluate(const Snapshot& s, const HandObservation& hands, bool* intrusion,
                   Contact* contact) const;
+  void decide(const Snapshot& s, const HandObservation& hands);
   void send(const Snapshot& s, double cap, Contact contact);
+  Overlay overlay(const Snapshot& s, const HandObservation& hands) const;
 
   const franka::Model& model_;
   franka::RobotState state_;  // F_T_EE, EE_T_K and load for the model
@@ -178,7 +213,9 @@ class Supervisor {
   // Cap last commanded for the current motion (nominal until the first command). Compared
   // against instead of the snapshot's cap, which lags until the control loop applies a command.
   double target_cap_ = 0.0;
+  Contact target_contact_ = Contact::kFree;  // contact target_cap_ was computed for
   std::vector<Decision> decisions_;
+  std::function<void(const Overlay&)> overlay_sink_;
 };
 
 }  // namespace supervision

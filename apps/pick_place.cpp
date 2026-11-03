@@ -12,6 +12,9 @@
 // runs at the energy-limited speed only.
 //
 // Usage: pick_place [S_lim in J, default 0.05] [UDP port, default 5005]
+//                   [overlay port, default 5006, 0: off]
+// The supervisor's view of every frame (reference point, predicted path, hand status) goes to
+// 127.0.0.1:<overlay port> for the detector's video overlay (see overlay_udp.h).
 // Writes, then plot with  python3 ../scripts/plot_slowdown.py pick_place.csv
 //   pick_place.csv, one row per control tick:
 //     t, segment (motion index 0..6, see kMotionNames), t_segment (time in that motion),
@@ -31,6 +34,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -45,6 +49,7 @@
 #include "hand_receiver.h"
 #include "mass_table.h"
 #include "motion.h"
+#include "overlay_udp.h"
 #include "poses.h"
 #include "s_curve.h"
 #include "supervision.h"
@@ -99,6 +104,7 @@ int main(int argc, char** argv) {
   supervision::Params params;
   if (argc > 1) params.s_lim = std::atof(argv[1]);
   const auto port = static_cast<uint16_t>(argc > 2 ? std::atoi(argv[2]) : 5005);
+  const auto overlay_port = static_cast<uint16_t>(argc > 3 ? std::atoi(argv[3]) : 5006);
   params.object_tip = kObjectTip;
   params.table_z = poses::kTableZ;
 
@@ -126,6 +132,12 @@ int main(int argc, char** argv) {
     // Motion ids 1..7 are the supervised motions of the task, in kMotionNames order.
     supervision::Shared shared;
     supervision::Supervisor supervisor(model, start, params, &shared);
+    std::unique_ptr<OverlaySender> overlay;
+    if (overlay_port != 0) {
+      overlay = std::make_unique<OverlaySender>("127.0.0.1", overlay_port);
+      supervisor.setOverlaySink([&](const supervision::Overlay& o) { overlay->send(o); });
+      std::cout << "overlay to UDP 127.0.0.1:" << overlay_port << "\n";
+    }
 
     // Where the tip will be, from the model at the recorded pre-place joints.
     auto pointAt = [&](const scurve::Vec7& q, bool tip) {

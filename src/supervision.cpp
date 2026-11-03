@@ -72,8 +72,7 @@ Eigen::Matrix<double, 7, 1> Supervisor::verticalJointRate(const scurve::Vec7& q,
              .solve(twist);
 }
 
-double Supervisor::evaluate(const Snapshot& s, const HandObservation& hands, bool* intrusion,
-                            Contact* contact_out) const {
+std::vector<scurve::Vec7> Supervisor::predict(const Snapshot& s) const {
   // Joints at the predicted path parameter (sigma or vertical distance) over the horizon.
   // Joint motion: on the straight joint line. Vertical motion: follow the line from the
   // robot's current pose with the model, in small resolved-rate steps.
@@ -94,34 +93,59 @@ double Supervisor::evaluate(const Snapshot& s, const HandObservation& hands, boo
     }
     qs.push_back(q);
   }
+  return qs;
+}
 
-  // Reference point: the held object's far end, else the EE.
-  const bool at_tip = shared_->holding_object.load();
+Eigen::Vector3d Supervisor::referencePoint(const scurve::Vec7& q, bool at_object_tip) const {
+  const std::array<double, 16> T = model_.pose(franka::Frame::kEndEffector, q,
+                                               flangeToReference(at_object_tip), state_.EE_T_K);
+  return Eigen::Vector3d(T[12], T[13], T[14]);
+}
 
-  // Every hand against every predicted reference point, each with its own sphere radius. An
-  // intruding hand near the table makes the contact constrained.
+std::array<HandStatus, kMaxHands> Supervisor::classify(const Snapshot& s,
+                                                       const std::vector<scurve::Vec7>& qs,
+                                                       bool at_tip,
+                                                       const HandObservation& hands) const {
+  // Every hand against every predicted reference point, each with its own sphere radius. Only a
+  // downward vertical motion can trap a hand against the table; every other motion (joint
+  // motions in the air, moving up) is a free contact.
+  std::array<HandStatus, kMaxHands> status{};
   bool intruding[kMaxHands] = {};
   for (const scurve::Vec7& qk : qs) {
-    const std::array<double, 16> T = model_.pose(franka::Frame::kEndEffector, qk,
-                                                 flangeToReference(at_tip), state_.EE_T_K);
-    const Eigen::Vector3d p(T[12], T[13], T[14]);
+    const Eigen::Vector3d p = referencePoint(qk, at_tip);
     for (int h = 0; h < hands.n_hands; ++h) {
       const HandSphere& hand = hands.hands[h];
       intruding[h] |= (p - hand.center).norm() < hand.radius + params_.radius_margin;
     }
   }
-  // Only a downward vertical motion can trap a hand against the table; every other motion
-  // (joint motions in the air, moving up) is a free contact, also with the hand position unknown.
-  Contact contact = Contact::kFree;
-  if (s.vertical && s.direction < 0.0) {
-    for (int h = 0; h < hands.n_hands; ++h) {
-      if (intruding[h] && nearTable(hands.hands[h])) contact = Contact::kConstrained;
-    }
-    if (hands.unlocated) contact = Contact::kUnknown;
+  const bool moving_down = s.vertical && s.direction < 0.0;
+  for (int h = 0; h < hands.n_hands; ++h) {
+    if (!intruding[h]) continue;
+    status[h] = moving_down && nearTable(hands.hands[h]) ? HandStatus::kConstrained
+                                                        : HandStatus::kIntruding;
   }
+  return status;
+}
+
+double Supervisor::evaluate(const Snapshot& s, const HandObservation& hands, bool* intrusion,
+                            Contact* contact_out) const {
+  const std::vector<scurve::Vec7> qs = predict(s);
+
+  // Reference point: the held object's far end, else the EE.
+  const bool at_tip = shared_->holding_object.load();
+
+  // An intruding hand near the table makes the contact constrained; an unknown hand position
+  // while moving down makes it unknown.
+  const std::array<HandStatus, kMaxHands> status = classify(s, qs, at_tip, hands);
+  Contact contact = Contact::kFree;
+  bool any_intruding = false;
+  for (int h = 0; h < hands.n_hands; ++h) {
+    any_intruding |= status[h] != HandStatus::kClear;
+    if (status[h] == HandStatus::kConstrained) contact = Contact::kConstrained;
+  }
+  if (s.vertical && s.direction < 0.0 && hands.unlocated) contact = Contact::kUnknown;
   *contact_out = contact;
-  *intrusion = hands.unlocated || std::any_of(intruding, intruding + hands.n_hands,
-                                              [](bool b) { return b; });
+  *intrusion = hands.unlocated || any_intruding;
   if (!*intrusion) {
     return s.nominal;
   }
@@ -151,6 +175,7 @@ void Supervisor::send(const Snapshot& s, double cap, Contact contact) {
   c.cap = cap;
   shared_->command.store(c);
   target_cap_ = cap;
+  target_contact_ = contact;
   holding_ = cap < s.nominal * (1.0 - 1e-6);
   waiting_for_ = holding_ ? c.seq : 0;  // only a slowdown is waited for
   decisions_.push_back({s.motion_id, s.t, holding_, cap / s.nominal, contact});
@@ -158,6 +183,32 @@ void Supervisor::send(const Snapshot& s, double cap, Contact contact) {
 
 void Supervisor::onFrame(const HandObservation& hands) {
   const Snapshot s = shared_->snapshot.load();
+  decide(s, hands);
+  if (overlay_sink_) overlay_sink_(overlay(s, hands));
+}
+
+Overlay Supervisor::overlay(const Snapshot& s, const HandObservation& hands) const {
+  Overlay o;
+  // Before the first motion the snapshot is still the default one.
+  o.valid = std::any_of(s.q.begin(), s.q.end(), [](double v) { return v != 0.0; });
+  if (!o.valid) return o;
+  o.holding_object = shared_->holding_object.load();
+  o.reference = referencePoint(s.q, o.holding_object);
+  o.hands = hands;
+  o.moving = s.motion_id != 0;
+  if (!o.moving) return o;
+  const std::vector<scurve::Vec7> qs = predict(s);
+  for (const scurve::Vec7& qk : qs) o.predicted.push_back(referencePoint(qk, o.holding_object));
+  o.status = classify(s, qs, o.holding_object, hands);
+  if (s.motion_id == motion_) {
+    o.slowed = holding_;
+    o.contact = target_contact_;
+    o.cap_fraction = target_cap_ / s.nominal;
+  }
+  return o;
+}
+
+void Supervisor::decide(const Snapshot& s, const HandObservation& hands) {
   if (s.motion_id == 0) {
     return;  // between motions
   }
@@ -166,6 +217,7 @@ void Supervisor::onFrame(const HandObservation& hands) {
     waiting_for_ = 0;
     holding_ = false;
     target_cap_ = s.nominal;
+    target_contact_ = Contact::kFree;
   }
   if (waiting_for_ != 0) {
     // After a slowdown: computed once, look again only after it was applied, its change
