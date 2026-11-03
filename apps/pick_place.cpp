@@ -17,8 +17,10 @@
 //     t, segment (motion index 0..6, see kMotionNames), t_segment (time in that motion),
 //     ee_speed = |J(q) dq| of the reference point (measured dq) [m/s], v_safe there along its
 //     commanded motion direction (J(q) dq_d),
-//     m_eff = effective mass there along that direction [kg] (v_safe =
-//     sqrt(2 S_lim / m_eff); both empty at rest), hand_present (a hand seen, or position unknown),
+//     m_eff = the model's effective mass there along that direction [kg], m_limit = the mass
+//     the energy limit used (v_safe = sqrt(2 S_lim / m_limit); all three empty at rest),
+//     contact (0 free: m_eff, 1 hand near the table: tabulated mass, 2 hand position unknown:
+//     the larger), hand_present (a hand seen, or position unknown),
 //     hand_unlocated (position unknown or stream stale), hand_clearance (reference point to the
 //     nearest located hand's intrusion boundary, sphere radius + margin; < 0 inside),
 //     dq1..dq7 measured, dq_d1..dq_d7 commanded [rad/s], tau_ext1..tau_ext7 estimated external
@@ -29,6 +31,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <string>
 #include <vector>
 
 #include <Eigen/Core>
@@ -40,6 +43,7 @@
 #include "confirm.h"
 #include "examples_common.h"
 #include "hand_receiver.h"
+#include "mass_table.h"
 #include "motion.h"
 #include "poses.h"
 #include "s_curve.h"
@@ -93,6 +97,7 @@ int main(int argc, char** argv) {
   if (argc > 1) params.s_lim = std::atof(argv[1]);
   const auto port = static_cast<uint16_t>(argc > 2 ? std::atoi(argv[2]) : 5005);
   params.object_tip = kObjectTip;
+  params.table_z = poses::kTableZ;
 
   if (std::isnan(poses::kPrePlaceJoints[0])) {
     std::cerr << "Not configured yet: poses::kPrePlaceJoints, record it with\n  record_pose "
@@ -102,6 +107,13 @@ int main(int argc, char** argv) {
   }
 
   try {
+    // Reflected mass for a hand trapped against the table (see mass_table.h).
+    const std::string mass_table_path = std::string(PROJECT_DIR) + "/config/reflected_mass.csv";
+    const MassTable mass_table = MassTable::load(mass_table_path);
+    params.constrained_mass = &mass_table;
+    std::cout << "constrained reflected mass: " << mass_table.cols() << " x " << mass_table.rows()
+              << " grid from " << mass_table_path << ", max " << mass_table.maxMass() << " kg\n";
+
     franka::Robot robot(kRobotIp);
     franka::Gripper gripper(kRobotIp);
     const franka::Model model = robot.loadModel();
@@ -243,19 +255,23 @@ int main(int argc, char** argv) {
     // --- Results.
     std::cout << "\nSupervisor decisions:\n";
     std::ofstream dec("pick_place_decisions.csv");
-    dec << "segment,t_segment,action,cap_percent\n";
+    dec << "segment,t_segment,action,cap_percent,contact\n";
     for (const supervision::Decision& d : supervisor.decisions()) {
+      const char* contact = d.contact == supervision::Contact::kConstrained ? "constrained"
+                            : d.contact == supervision::Contact::kUnknown   ? "unknown"
+                                                                            : "free";
       std::cout << "  " << kMotionNames[d.motion_id - 1] << " t=" << d.t_motion << " s: "
                 << (d.slow_down ? "slow down" : "resume") << ", cap " << d.cap_fraction * 100
-                << "%\n";
+                << "%" << (d.slow_down ? std::string(" (") + contact + ")" : "") << "\n";
       dec << d.motion_id - 1 << "," << d.t_motion << "," << (d.slow_down ? "slow" : "resume")
-          << "," << d.cap_fraction * 100 << "\n";
+          << "," << d.cap_fraction * 100 << "," << contact << "\n";
     }
 
     using Jacobian = Eigen::Matrix<double, 6, 7>;
     std::ofstream csv("pick_place.csv");
     csv << std::setprecision(7)
-        << "t,segment,t_segment,ee_speed,v_safe,m_eff,hand_present,hand_unlocated,hand_clearance";
+        << "t,segment,t_segment,ee_speed,v_safe,m_eff,m_limit,contact,hand_present,hand_unlocated,"
+           "hand_clearance";
     for (const char* name : {"dq", "dq_d", "tau_ext"}) {
       for (int i = 1; i <= 7; ++i) csv << "," << name << i;
     }
@@ -284,29 +300,41 @@ int main(int argc, char** argv) {
           J.topRows<3>() * Eigen::Map<const Eigen::Matrix<double, 7, 1>>(r.dq_d.data());
       const double speed = v.norm();
       const double speed_d = v_d.norm();
+      // Contact as the supervisor sees it, for the current reference point: unknown without a
+      // position, constrained for a hand near the table within its intrusion distance.
+      const std::array<double, 16> T_ref =
+          model.pose(franka::Frame::kEndEffector, r.q, F_T_ref, start.EE_T_K);
+      const Eigen::Vector3d p_ref(T_ref[12], T_ref[13], T_ref[14]);
+      supervision::Contact contact = supervision::Contact::kFree;
+      for (int h = 0; h < hands_now.n_hands; ++h) {
+        const supervision::HandSphere& hand = hands_now.hands[h];
+        if (supervisor.nearTable(hand) &&
+            (p_ref - hand.center).norm() < hand.radius + params.radius_margin) {
+          contact = supervision::Contact::kConstrained;
+        }
+      }
+      if (hands_now.unlocated) contact = supervision::Contact::kUnknown;
       csv << r.t << "," << r.motion << "," << r.t_motion << "," << speed << ",";
       if (speed_d > 1e-4) {  // no motion direction at rest
         const Eigen::Vector3d u = v_d / speed_d;
         const double m_eff = supervisor.effectiveMass(r.q, u, at_tip);
-        csv << supervisor.safeSpeed(r.q, u, at_tip) << "," << m_eff;
+        csv << supervisor.safeSpeed(r.q, u, at_tip, contact) << "," << m_eff << ","
+            << supervisor.limitMass(r.q, u, at_tip, contact);
         if (r.motion >= 0 && r.motion < kNumMotions && speed_d > 0.01) {  // skip near rest
           m_eff_min[r.motion] = std::min(m_eff_min[r.motion], m_eff);
           m_eff_max[r.motion] = std::max(m_eff_max[r.motion], m_eff);
         }
       } else {
-        csv << ",";
+        csv << ",,";
       }
-      csv << "," << (hands_now.n_hands > 0 || hands_now.unlocated) << "," << hands_now.unlocated
-          << ",";
+      csv << "," << static_cast<int>(contact) << "," << (hands_now.n_hands > 0 || hands_now.unlocated)
+          << "," << hands_now.unlocated << ",";
       if (hands_now.n_hands > 0) {
-        const std::array<double, 16> T =
-            model.pose(franka::Frame::kEndEffector, r.q, F_T_ref, start.EE_T_K);
-        const Eigen::Vector3d p(T[12], T[13], T[14]);
         double clearance = INFINITY;
         for (int h = 0; h < hands_now.n_hands; ++h) {
           const supervision::HandSphere& hand = hands_now.hands[h];
           clearance = std::min(clearance,
-                               (p - hand.center).norm() - hand.radius - params.radius_margin);
+                               (p_ref - hand.center).norm() - hand.radius - params.radius_margin);
         }
         csv << clearance;
       }

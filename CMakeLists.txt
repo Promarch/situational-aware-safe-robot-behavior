@@ -30,12 +30,14 @@ target_include_directories(s_curve PUBLIC src)
 target_link_libraries(s_curve PUBLIC Franka::Franka)
 
 # Robot motions, hand-aware speed supervision and the UDP hand receiver.
-add_library(robot_motion STATIC src/motion.cpp src/supervision.cpp src/hand_receiver.cpp)
+add_library(robot_motion STATIC src/motion.cpp src/supervision.cpp src/hand_receiver.cpp
+            src/mass_table.cpp)
 target_link_libraries(robot_motion PUBLIC s_curve examples_common Threads::Threads)
 
 # --- Programs (apps/)
 add_executable(pick_place apps/pick_place.cpp)
 target_link_libraries(pick_place robot_motion)
+target_compile_definitions(pick_place PRIVATE PROJECT_DIR="${CMAKE_SOURCE_DIR}")
 
 add_executable(calibrate_camera apps/calibrate_camera.cpp)
 target_link_libraries(calibrate_camera robot_motion)
@@ -55,3 +57,6 @@ target_link_libraries(test_s_curve s_curve)
 
 add_executable(test_replan tests/test_replan.cpp)
 target_link_libraries(test_replan s_curve)
+
+add_executable(test_mass_table tests/test_mass_table.cpp src/mass_table.cpp)
+target_include_directories(test_mass_table PRIVATE src)

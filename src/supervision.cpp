@@ -39,9 +39,26 @@ double Supervisor::effectiveMass(const scurve::Vec7& q, const Eigen::Vector3d& u
   return 1.0 / (u.transpose() * cartesian_mass_inverse.topLeftCorner<3, 3>() * u);
 }
 
+double Supervisor::tabulatedMass(const scurve::Vec7& q) const {
+  const std::array<double, 16> T =
+      model_.pose(franka::Frame::kEndEffector, q, state_.F_T_EE, state_.EE_T_K);
+  return params_.constrained_mass->lookup(std::hypot(T[12], T[13]), T[14] - params_.table_z);
+}
+
+double Supervisor::limitMass(const scurve::Vec7& q, const Eigen::Vector3d& u,
+                             bool at_object_tip, Contact contact) const {
+  if (contact == Contact::kFree || params_.constrained_mass == nullptr) {
+    return effectiveMass(q, u, at_object_tip);
+  }
+  if (contact == Contact::kConstrained) {
+    return tabulatedMass(q);
+  }
+  return std::max(effectiveMass(q, u, at_object_tip), tabulatedMass(q));  // unknown
+}
+
 double Supervisor::safeSpeed(const scurve::Vec7& q, const Eigen::Vector3d& u,
-                             bool at_object_tip) const {
-  return std::sqrt(2.0 * params_.s_lim / effectiveMass(q, u, at_object_tip));
+                             bool at_object_tip, Contact contact) const {
+  return std::sqrt(2.0 * params_.s_lim / limitMass(q, u, at_object_tip, contact));
 }
 
 Eigen::Matrix<double, 7, 1> Supervisor::verticalJointRate(const scurve::Vec7& q,
@@ -55,8 +72,8 @@ Eigen::Matrix<double, 7, 1> Supervisor::verticalJointRate(const scurve::Vec7& q,
              .solve(twist);
 }
 
-double Supervisor::evaluate(const Snapshot& s, const HandObservation& hands,
-                            bool* intrusion) const {
+double Supervisor::evaluate(const Snapshot& s, const HandObservation& hands, bool* intrusion,
+                            Contact* contact_out) const {
   // Joints at the predicted path parameter (sigma or vertical distance) over the horizon.
   // Joint motion: on the straight joint line. Vertical motion: follow the line from the
   // robot's current pose with the model, in small resolved-rate steps.
@@ -81,17 +98,26 @@ double Supervisor::evaluate(const Snapshot& s, const HandObservation& hands,
   // Reference point: the held object's far end, else the EE.
   const bool at_tip = shared_->holding_object.load();
 
-  // Every hand against every predicted reference point, each with its own sphere radius.
-  *intrusion = hands.unlocated || std::any_of(qs.begin(), qs.end(), [&](const scurve::Vec7& qk) {
+  // Every hand against every predicted reference point, each with its own sphere radius. An
+  // intruding hand near the table makes the contact constrained.
+  bool intruding[kMaxHands] = {};
+  for (const scurve::Vec7& qk : qs) {
     const std::array<double, 16> T = model_.pose(franka::Frame::kEndEffector, qk,
                                                  flangeToReference(at_tip), state_.EE_T_K);
     const Eigen::Vector3d p(T[12], T[13], T[14]);
     for (int h = 0; h < hands.n_hands; ++h) {
       const HandSphere& hand = hands.hands[h];
-      if ((p - hand.center).norm() < hand.radius + params_.radius_margin) return true;
+      intruding[h] |= (p - hand.center).norm() < hand.radius + params_.radius_margin;
     }
-    return false;
-  });
+  }
+  Contact contact = Contact::kFree;
+  for (int h = 0; h < hands.n_hands; ++h) {
+    if (intruding[h] && nearTable(hands.hands[h])) contact = Contact::kConstrained;
+  }
+  if (hands.unlocated) contact = Contact::kUnknown;
+  *contact_out = contact;
+  *intrusion = hands.unlocated || std::any_of(intruding, intruding + hands.n_hands,
+                                              [](bool b) { return b; });
   if (!*intrusion) {
     return s.nominal;
   }
@@ -108,13 +134,13 @@ double Supervisor::evaluate(const Snapshot& s, const HandObservation& hands,
         (s.vertical ? verticalJointRate(qk, s.direction) : delta);
     const double gain = v_per_unit.norm();
     if (gain > 1e-9) {
-      cap = std::min(cap, safeSpeed(qk, v_per_unit / gain, at_tip) / gain);
+      cap = std::min(cap, safeSpeed(qk, v_per_unit / gain, at_tip, contact) / gain);
     }
   }
   return cap;
 }
 
-void Supervisor::send(const Snapshot& s, double cap) {
+void Supervisor::send(const Snapshot& s, double cap, Contact contact) {
   Command c;
   c.motion_id = s.motion_id;
   c.seq = ++seq_;
@@ -123,7 +149,7 @@ void Supervisor::send(const Snapshot& s, double cap) {
   target_cap_ = cap;
   holding_ = cap < s.nominal * (1.0 - 1e-6);
   waiting_for_ = holding_ ? c.seq : 0;  // only a slowdown is waited for
-  decisions_.push_back({s.motion_id, s.t, holding_, cap / s.nominal});
+  decisions_.push_back({s.motion_id, s.t, holding_, cap / s.nominal, contact});
 }
 
 void Supervisor::onFrame(const HandObservation& hands) {
@@ -152,16 +178,17 @@ void Supervisor::onFrame(const HandObservation& hands) {
   }
 
   bool intrusion = false;
+  Contact contact = Contact::kFree;
   const bool any_hand = hands.n_hands > 0 || hands.unlocated;
-  const double cap = any_hand ? evaluate(s, hands, &intrusion) : s.nominal;
+  const double cap = any_hand ? evaluate(s, hands, &intrusion, &contact) : s.nominal;
   const double eps = 1e-6 * s.nominal;
   // Against the commanded cap, not s.cap: a resume not yet applied still shows the slow cap.
   if (intrusion && cap < target_cap_ - eps) {
     // Slow down. Also replaces a resume, whether still accelerating or not yet applied (the
     // control loop only sees the latest command).
-    send(s, cap);
+    send(s, cap, contact);
   } else if (!intrusion && target_cap_ < s.nominal - eps) {
-    send(s, s.nominal);  // resume
+    send(s, s.nominal, Contact::kFree);  // resume
   }
 }
 

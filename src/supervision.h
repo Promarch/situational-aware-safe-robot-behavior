@@ -25,6 +25,7 @@
 #include <franka/model.h>
 #include <franka/robot_state.h>
 
+#include "mass_table.h"
 #include "s_curve.h"
 #include "seqlock.h"
 
@@ -73,6 +74,19 @@ struct Params {
   Eigen::Vector3d object_tip = Eigen::Vector3d::Zero();
   double s_lim = 0.01;    // transferable energy limit [J]
   double hold_after_slowdown = 0.3;  // no detection for this long once a slowdown is done [s]
+  // A hand trapped against the table cannot move away: when an intruding hand's center is at most
+  // `constrained_band` above the table, the energy limit uses the reflected mass tabulated in
+  // `constrained_mass` at the EE position instead of the model's effective mass.
+  double table_z = 0.0;            // table surface in the base frame [m]
+  double constrained_band = 0.05;  // [m]
+  const MassTable* constrained_mass = nullptr;  // must outlive the supervisor
+};
+
+// How a hand that intrudes can be hit, which decides the mass used for the energy limit.
+enum class Contact {
+  kFree,         // the hand can move away: the model's effective mass
+  kConstrained,  // the hand is near the table: the tabulated reflected mass
+  kUnknown,      // the hand's position is unknown: the larger of the two
 };
 
 // Hands of one camera frame, as the detector sends them (hand_udp protocol, udp-implementation
@@ -98,6 +112,7 @@ struct Decision {
   double t_motion;      // time since the motion started [s]
   bool slow_down;       // false: resume to nominal
   double cap_fraction;  // cap / nominal speed
+  Contact contact;      // contact the cap was computed for (kFree for a resume)
 };
 
 class Supervisor {
@@ -113,9 +128,21 @@ class Supervisor {
   // frame): m_eff = 1 / (u^T [J M^-1 J^T]_pos u), J and M from libfranka's model at q [kg].
   double effectiveMass(const scurve::Vec7& q, const Eigen::Vector3d& u, bool at_object_tip) const;
 
+  // Mass used for the energy limit at configuration q for the given contact: the effective mass
+  // at the reference point in direction u, and/or the tabulated mass at the EE position.
+  double limitMass(const scurve::Vec7& q, const Eigen::Vector3d& u, bool at_object_tip,
+                   Contact contact) const;
+
   // Energy-limited speed of the reference point (the object's far end if `at_object_tip`, else
-  // the EE) at configuration q when moving in direction u (unit, base frame).
-  double safeSpeed(const scurve::Vec7& q, const Eigen::Vector3d& u, bool at_object_tip) const;
+  // the EE) at configuration q when moving in direction u (unit, base frame):
+  // sqrt(2 S_lim / limitMass).
+  double safeSpeed(const scurve::Vec7& q, const Eigen::Vector3d& u, bool at_object_tip,
+                   Contact contact) const;
+
+  // Whether a hand counts as trapped against the table.
+  bool nearTable(const HandSphere& hand) const {
+    return hand.center.z() - params_.table_z <= params_.constrained_band;
+  }
 
   // Flange-to-reference-point transform for libfranka's model, in place of F_T_EE.
   const std::array<double, 16>& flangeToReference(bool at_object_tip) const {
@@ -130,9 +157,12 @@ class Supervisor {
   Jacobian jacobian(const scurve::Vec7& q, bool at_object_tip) const;
   // Joint velocity moving the EE vertically at 1 m/s (+1 up, -1 down) without rotating.
   Eigen::Matrix<double, 7, 1> verticalJointRate(const scurve::Vec7& q, double direction) const;
-  // Speed cap in the snapshot's units; sets *intrusion.
-  double evaluate(const Snapshot& s, const HandObservation& hands, bool* intrusion) const;
-  void send(const Snapshot& s, double cap);
+  // Tabulated reflected mass at the EE position of configuration q.
+  double tabulatedMass(const scurve::Vec7& q) const;
+  // Speed cap in the snapshot's units; sets *intrusion and the *contact it was computed for.
+  double evaluate(const Snapshot& s, const HandObservation& hands, bool* intrusion,
+                  Contact* contact) const;
+  void send(const Snapshot& s, double cap, Contact contact);
 
   const franka::Model& model_;
   franka::RobotState state_;  // F_T_EE, EE_T_K and load for the model

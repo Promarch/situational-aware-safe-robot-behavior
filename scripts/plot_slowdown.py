@@ -5,8 +5,8 @@ Writes two figures next to the log:
   <name>_speed.png   EE speed and energy-limited speed v_safe (every tick), and the EE's
                      clearance to the nearest hand's intrusion boundary (< 0: inside)
   <name>_joints.png  measured (solid) and commanded (dashed) velocity of each joint
-  <name>_mass.png    effective mass m_eff at the reference point along its motion, which sets
-                     v_safe = sqrt(2 S_lim / m_eff)
+  <name>_mass.png    effective mass m_eff at the reference point along its motion, and the mass
+                     the energy limit used (orange band: a hand near the table, tabulated mass)
 Segments are placed back to back on a "motion time" axis (waits between them left out). Gray
 bands mark when a hand is seen, pink ones when its position is unknown or the stream is stale; vertical lines mark the supervisor's commands from
 <name>_decisions.csv (red: slow down, green: resume), labelled with the cap in % of nominal.
@@ -118,6 +118,12 @@ print("saved", base + "_joints.png")
 fig, ax = plt.subplots(1, 1, figsize=(14, 4.5))
 ax.plot(x, per_segment(d["m_eff"]), color="tab:purple", lw=1.2,
         label="m_eff = 1 / (u^T [J M^-1 J^T]_pos u) at the reference point (object tip while held)")
+if "m_limit" in d.dtype.names:
+    ax.plot(x, per_segment(d["m_limit"]), color="tab:orange", lw=1.2, ls="--",
+            label="mass used by the energy limit (tabulated while a hand is near the table)")
+    constrained = per_segment(d["contact"]) == 1
+    ax.fill_between(x, 0, 1, where=constrained, transform=ax.get_xaxis_transform(),
+                    color="tab:orange", alpha=0.15, lw=0)
 ax.set_ylabel("effective mass [kg]")
 ax.set_ylim(bottom=0)
 ax.set_xlabel("motion time [s]   (gray: hand; pink: position unknown / stream stale; dashed: red slow down, green resume)")
