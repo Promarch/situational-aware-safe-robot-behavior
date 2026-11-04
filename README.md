@@ -64,3 +64,19 @@ uv run --python 3.12 python python_udp/hand_detect_udp.py --no-gui \
 cd build && ./pick_place [S_lim]
 python3 ../scripts/plot_slowdown.py pick_place.csv
 ```
+
+### Status light
+
+`pick_place` shows the supervisor's state on the Nanoleaf in `src/nanoleaf_config.h` (needs
+libcurl, `libcurl4-openssl-dev`), one UDP frame per camera frame. If the controller does not answer
+at startup, the task runs without it. Check it with `./test_nanoleaf [<ip> <token> <panelId> ...]`.
+
+| Colour | Meaning (highest first) |
+|---|---|
+| red | libfranka reported an error (reflex, gripper, network); stays until the program exits |
+| blue | a hand without a position, or the hand stream is stale |
+| magenta | a hand exposed near the table during a downward motion (constrained contact) |
+| orange | a hand exposed to the robot, or the motion is slowed down |
+| yellow | a hand is seen, not exposed |
+| green | no hand |
+| white | supervision not running (before and after the task) |

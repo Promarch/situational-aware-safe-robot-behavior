@@ -17,6 +17,9 @@
 //                   [overlay port, default 5006, 0: off]
 // The supervisor's view of every frame (reference point, predicted path, hand status) goes to
 // 127.0.0.1:<overlay port> for the detector's video overlay (see overlay_udp.h).
+// The Nanoleaf in nanoleaf_config.h shows the same per frame (status_light.h): green no hand,
+// yellow hand clear, orange intruding/slowed, magenta constrained, blue position unknown or stream
+// stale, red after an error (until exit), white while not supervising. Unreachable: runs without.
 // Writes, then plot with  python3 ../scripts/plot_slowdown.py pick_place.csv
 //   pick_place.csv, one row per control tick:
 //     t, segment (motion index 0..6, see kMotionNames), t_segment (time in that motion),
@@ -53,9 +56,12 @@
 #include "hand_receiver.h"
 #include "mass_table.h"
 #include "motion.h"
+#include "nanoleaf.h"
+#include "nanoleaf_config.h"
 #include "overlay_udp.h"
 #include "poses.h"
 #include "s_curve.h"
+#include "status_light.h"
 #include "supervision.h"
 
 namespace {
@@ -121,6 +127,25 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  // Status light, display only. Declared before the try so that the catch below can show an error,
+  // and before the HandReceiver, whose thread uses it, so that it outlives that thread.
+  std::unique_ptr<Nanoleaf> leaf;
+  std::unique_ptr<StatusLight> light;
+  try {
+    leaf = std::make_unique<Nanoleaf>(nanoleaf_config::kIp, nanoleaf_config::kToken,
+                                      nanoleaf_config::kPanels);
+    std::string error;
+    if (leaf->activateStreaming(&error)) {
+      light = std::make_unique<StatusLight>(*leaf);
+      light->showIdle();
+      std::cout << "status light: Nanoleaf " << nanoleaf_config::kIp << "\n";
+    } else {
+      std::cerr << "status light off, Nanoleaf " << nanoleaf_config::kIp << ": " << error << "\n";
+    }
+  } catch (const std::exception& e) {
+    std::cerr << "status light off: " << e.what() << "\n";
+  }
+
   try {
     // Reflected mass for a hand trapped against the table (see mass_table.h).
     const std::string mass_table_path = std::string(PROJECT_DIR) + "/config/constrained_collision_mass.csv";
@@ -141,8 +166,15 @@ int main(int argc, char** argv) {
     std::unique_ptr<OverlaySender> overlay;
     if (overlay_port != 0) {
       overlay = std::make_unique<OverlaySender>("127.0.0.1", overlay_port);
-      supervisor.setOverlaySink([&](const supervision::Overlay& o) { overlay->send(o); });
       std::cout << "overlay to UDP 127.0.0.1:" << overlay_port << "\n";
+    }
+    // Runs in the HandReceiver's thread after each frame's speed decision: two non-blocking UDP
+    // sends, nothing the control loop waits for.
+    if (overlay || light) {
+      supervisor.setOverlaySink([&](const supervision::Overlay& o) {
+        if (overlay) overlay->send(o);
+        if (light) light->onOverlay(o);
+      });
     }
 
     // Where the tip will be, from the model at the recorded pre-place joints.
@@ -266,12 +298,14 @@ int main(int argc, char** argv) {
       } catch (const franka::ControlException& e) {
         // A reflex (e.g. a collision) aborted the motion: recover so the robot is ready again,
         // and still write the log below, which is when it matters most.
+        if (light) light->showError();  // latched: the frames still arriving keep it red
         std::cerr << "\nMOTION ABORTED: " << e.what() << "\n";
         robot.automaticErrorRecovery();
         std::cerr << "automatic error recovery done\n";
       }
       rx = receiver.stats();
     }
+    if (light) light->showIdle();  // no-op after an error
     std::cout << (completed ? "Task completed.\n" : "Task NOT completed.\n") << "UDP: "
               << rx.received << " packets, " << rx.lost << " lost, " << rx.bad << " malformed, "
               << rx.wrong_frame << " not in the robot base frame, " << rx.stale
@@ -404,6 +438,7 @@ int main(int argc, char** argv) {
               << ") and pick_place_decisions.csv\n"
               << "Plot: python3 ../scripts/plot_slowdown.py pick_place.csv\n";
   } catch (const std::exception& e) {
+    if (light) light->showError();
     std::cerr << "exception: " << e.what() << "\n"
               << "If the robot is in reflex mode, recover it in Desk before the next run.\n";
     return -1;

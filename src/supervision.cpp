@@ -293,11 +293,11 @@ Overlay Supervisor::overlay(const Snapshot& s, bool holding, const View& v,
   Overlay o;
   // Before the first motion the snapshot is still the default one.
   o.valid = std::any_of(s.q.begin(), s.q.end(), [](double x) { return x != 0.0; });
+  o.hands = hands;  // also without a state (all hands clear), for the status light
   if (!o.valid) return o;
   o.holding_object = holding;
   o.reference = referencePoint(s.q, holding);
   o.capsules = body_.capsules(s.q, holding);
-  o.hands = hands;
   o.moving = s.motion_id != 0;
   if (!o.moving) {
     // At rest nothing can be hit: every hand is clear, with its clearance to the robot as it is.
