@@ -21,11 +21,16 @@ Usage:
 Debug:   python3 udp_examples/udp_listener.py --port 5005     (in a second terminal)
 
 Robot overlay (with --extrinsic): --robot-port 5006 receives pick_place's supervisor view
-(robot_overlay_protocol.py) and draws it into the image: the robot's reference point (red), its
-predicted path over the next 0.5 s as a translucent tube (yellow, orange while slowed down) and the hand status
-(skeleton orange: intrudes, free contact; magenta: intrudes near the table while the robot moves
-down = constrained contact). --record out.mp4 writes the annotated colour image to a video,
-also with --no-gui.
+(robot_overlay_protocol.py, version 2) and draws it into the image:
+  * the robot's capsules (links, hand, fingers, held object) as the supervisor models them: grey,
+    orange where an intruding hand is exposed to them, magenta for a constrained contact
+    (--no-capsules: off),
+  * the robot's reference point (red) and its predicted path over the next 0.5 s as a
+    translucent tube (yellow, orange while slowed down),
+  * the hand status (skeleton orange: intrudes, free contact; magenta: intrudes near the table
+    while the robot moves down = constrained contact) with a line to the nearest robot point,
+  * the contact point that set the slowdown (white-ringed dot) and its capsule in the status text.
+--record out.mp4 writes the annotated colour image to a video, also with --no-gui.
 
 Install (Python 3.10-3.12): pyrealsense2 mediapipe opencv-python numpy
 hand_udp_protocol.py must be in the same directory. Run from the repo root.
@@ -94,6 +99,8 @@ def parse_args():
                         "--extrinsic to project robot base frame points into the image")
     p.add_argument("--tube-radius", type=float, default=0.03, metavar="M",
                    help="radius of the drawn predicted-path tube [m] (default 0.03)")
+    p.add_argument("--no-capsules", action="store_true",
+                   help="do not draw the robot's capsules")
     p.add_argument("--record", type=Path, default=None, metavar="OUT.mp4",
                    help="write the annotated colour image to this video file")
     p.add_argument("--no-gui", action="store_true",
@@ -148,6 +155,8 @@ HAND_MATCH_M = 0.15   # a detected hand is the robot's hand when their centres a
 
 
 TUBE_ALPHA = 0.4      # opacity of the predicted-path tube
+COLOR_CAPSULE = (160, 160, 160)  # grey: robot capsule no hand is exposed to
+CAPSULE_ALPHA = 0.25             # opacity of the robot's capsules
 
 
 def project(T_cam_base: np.ndarray, intr, p_base: np.ndarray, radius: float = 0.0):
@@ -163,10 +172,9 @@ def project(T_cam_base: np.ndarray, intr, p_base: np.ndarray, radius: float = 0.
     return uv, max(1, int(round(intr.fx * radius / p[2])))
 
 
-def draw_tube(bgr: np.ndarray, circles, color) -> None:
-    """Translucent tube through projected spheres [((u, v), r), ...]: a disc per sphere and the
-    trapezoid between neighbours, blended once so that overlaps do not darken."""
-    mask = np.zeros(bgr.shape[:2], np.uint8)
+def add_tube(mask: np.ndarray, circles) -> None:
+    """Adds the tube through projected spheres [((u, v), r), ...] to a mask: a disc per sphere
+    and the trapezoid between neighbours."""
     for (c, r) in circles:
         cv2.circle(mask, c, r, 255, -1, cv2.LINE_AA)
     for (c0, r0), (c1, r1) in zip(circles, circles[1:]):
@@ -177,11 +185,46 @@ def draw_tube(bgr: np.ndarray, circles, color) -> None:
         nrm = np.array([-d[1], d[0]]) / n
         quad = np.array([c0 + nrm * r0, c1 + nrm * r1, c1 - nrm * r1, c0 - nrm * r0])
         cv2.fillConvexPoly(mask, np.round(quad).astype(np.int32), 255, cv2.LINE_AA)
-    a = (mask.astype(np.float32) * (TUBE_ALPHA / 255.0))[..., None]
+
+
+def blend_mask(bgr: np.ndarray, mask: np.ndarray, color, alpha: float = TUBE_ALPHA) -> None:
+    """Blends `color` into the masked area once, so that overlaps do not darken, and outlines it."""
+    a = (mask.astype(np.float32) * (alpha / 255.0))[..., None]
     bgr[:] = (bgr * (1.0 - a) + np.array(color, np.float32) * a).astype(np.uint8)
     contours, _ = cv2.findContours((mask > 127).astype(np.uint8), cv2.RETR_EXTERNAL,
                                    cv2.CHAIN_APPROX_SIMPLE)
     cv2.drawContours(bgr, contours, -1, color, 1, cv2.LINE_AA)
+
+
+def draw_tube(bgr: np.ndarray, circles, color) -> None:
+    """Translucent tube through projected spheres [((u, v), r), ...]."""
+    mask = np.zeros(bgr.shape[:2], np.uint8)
+    add_tube(mask, circles)
+    blend_mask(bgr, mask, color)
+
+
+def draw_capsules(bgr: np.ndarray, overlay, T_cam_base: np.ndarray, intr) -> None:
+    """The robot's capsules, coloured by the worst status of the hands exposed to them."""
+    worst = {}  # capsule id -> worst status of a hand exposed to it
+    for h in overlay.hands:
+        if h.status == rop.HAND_CLEAR:
+            continue
+        for cid in range(len(rop.CAPSULE_NAMES)):
+            if h.exposed & (1 << cid):
+                worst[cid] = max(worst.get(cid, rop.HAND_CLEAR), h.status)
+    masks = {}
+    for c in overlay.capsules:
+        # The reference point (radius 0, without the link capsules) is drawn as a small ball.
+        ends = [project(T_cam_base, intr, p, max(c.radius, 0.01)) for p in (c.a, c.b)]
+        if any(e is None for e in ends):
+            continue
+        status = worst.get(c.id, rop.HAND_CLEAR)
+        if status not in masks:
+            masks[status] = np.zeros(bgr.shape[:2], np.uint8)
+        add_tube(masks[status], ends)
+    for status, mask in sorted(masks.items()):
+        blend_mask(bgr, mask, COLOR_HAND.get(status, COLOR_CAPSULE),
+                   CAPSULE_ALPHA if status == rop.HAND_CLEAR else TUBE_ALPHA)
 
 
 def hand_status(overlay, center_base: np.ndarray) -> int:
@@ -194,13 +237,15 @@ def hand_status(overlay, center_base: np.ndarray) -> int:
 
 
 def draw_robot(bgr: np.ndarray, overlay, T_cam_base: np.ndarray, intr,
-               tube_radius: float) -> None:
+               tube_radius: float, capsules: bool = True) -> None:
     if overlay is None:
         cv2.putText(bgr, "robot: no overlay", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                     (0, 0, 255), 2, cv2.LINE_AA)
         return
     if not overlay.valid:
         return
+    if capsules:
+        draw_capsules(bgr, overlay, T_cam_base, intr)
     if overlay.moving and len(overlay.predicted):
         circles = [project(T_cam_base, intr, p, tube_radius) for p in overlay.predicted]
         circles = [c for c in circles if c is not None]
@@ -210,12 +255,27 @@ def draw_robot(bgr: np.ndarray, overlay, T_cam_base: np.ndarray, intr,
     if tip is not None:
         cv2.circle(bgr, tip, 7, COLOR_TIP, -1, cv2.LINE_AA)
         cv2.circle(bgr, tip, 8, (255, 255, 255), 1, cv2.LINE_AA)
+    # Each intruding hand: a line to the nearest robot surface point over the horizon.
+    for h in overlay.hands:
+        if h.status == rop.HAND_CLEAR or h.capsule == rop.NO_CAPSULE:
+            continue
+        a, b = project(T_cam_base, intr, h.center), project(T_cam_base, intr, h.closest)
+        if a is not None and b is not None:
+            cv2.line(bgr, a, b, COLOR_HAND[h.status], 1, cv2.LINE_AA)
+    if overlay.slowed and overlay.limiting_capsule != rop.NO_CAPSULE:
+        lp = project(T_cam_base, intr, overlay.limiting_point)
+        if lp is not None:
+            lcolor = COLOR_HAND[rop.HAND_CONSTRAINED] if overlay.contact != rop.CONTACT_FREE \
+                else COLOR_PATH_SLOWED
+            cv2.circle(bgr, lp, 5, lcolor, -1, cv2.LINE_AA)
+            cv2.circle(bgr, lp, 6, (255, 255, 255), 1, cv2.LINE_AA)
     text = ("robot: " + ("moving" if overlay.moving else "at rest") +
             ("  object tip" if overlay.holding_object else "  EE"))
     color = (0, 255, 0)
     if overlay.slowed:
         text += (f"  SLOWED {overlay.cap_fraction * 100:.0f}%  "
-                 f"{rop.CONTACT_NAMES.get(overlay.contact, '?')} contact")
+                 f"{rop.CONTACT_NAMES.get(overlay.contact, '?')} contact"
+                 f"  {rop.capsule_name(overlay.limiting_capsule)}")
         color = COLOR_HAND[rop.HAND_CONSTRAINED] if overlay.contact != rop.CONTACT_FREE \
             else COLOR_PATH_SLOWED
     if overlay.unlocated:
@@ -435,7 +495,8 @@ def main() -> None:
                 status += f"  send errors {sender.n_errors}"
 
             if robot_rx is not None:
-                draw_robot(bgr, overlay, T_cam_base, color_intr, args.tube_radius)
+                draw_robot(bgr, overlay, T_cam_base, color_intr, args.tube_radius,
+                           not args.no_capsules)
             if not args.no_gui or args.record is not None:
                 cv2.putText(bgr, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                             (0, 255, 0), 2, cv2.LINE_AA)
