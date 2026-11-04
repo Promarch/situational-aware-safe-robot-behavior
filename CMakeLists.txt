@@ -18,6 +18,7 @@ add_subdirectory(third_party/libfranka EXCLUDE_FROM_ALL)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libfranka/cmake")
 find_package(Eigen3 REQUIRED)
 find_package(Threads REQUIRED)
+find_package(CURL REQUIRED)  # Nanoleaf: switching the controller into streaming mode
 
 add_library(examples_common STATIC third_party/libfranka/examples/examples_common.cpp)
 target_include_directories(examples_common PUBLIC third_party/libfranka/examples)
@@ -29,11 +30,16 @@ add_library(s_curve STATIC src/s_curve.cpp)
 target_include_directories(s_curve PUBLIC src)
 target_link_libraries(s_curve PUBLIC Franka::Franka)
 
-# Robot motions, hand-aware speed supervision and the UDP hand receiver.
+# Nanoleaf light panels over UDP (extControl v2), no robot dependency.
+add_library(nanoleaf STATIC src/nanoleaf.cpp)
+target_include_directories(nanoleaf PUBLIC src)
+target_link_libraries(nanoleaf PRIVATE CURL::libcurl)
+
+# Robot motions, hand-aware speed supervision, the UDP hand receiver and the status light.
 add_library(robot_motion STATIC src/motion.cpp src/supervision.cpp src/hand_receiver.cpp
             src/overlay_udp.cpp src/robot_body.cpp
-            src/mass_table.cpp)
-target_link_libraries(robot_motion PUBLIC s_curve examples_common Threads::Threads)
+            src/mass_table.cpp src/status_light.cpp)
+target_link_libraries(robot_motion PUBLIC s_curve examples_common nanoleaf Threads::Threads)
 
 # --- Programs (apps/)
 add_executable(pick_place apps/pick_place.cpp)
@@ -46,6 +52,9 @@ target_compile_definitions(calibrate_camera PRIVATE PROJECT_DIR="${CMAKE_SOURCE_
 
 add_executable(test_hand_receiver apps/test_hand_receiver.cpp)
 target_link_libraries(test_hand_receiver robot_motion)
+
+add_executable(test_nanoleaf apps/test_nanoleaf.cpp)
+target_link_libraries(test_nanoleaf robot_motion)
 
 add_executable(compare_mass apps/compare_mass.cpp)
 target_link_libraries(compare_mass robot_motion)
@@ -72,3 +81,6 @@ target_include_directories(test_mass_table PRIVATE src)
 
 add_executable(test_robot_body tests/test_robot_body.cpp src/robot_body.cpp)
 target_link_libraries(test_robot_body s_curve Eigen3::Eigen3)
+
+add_executable(test_status_light tests/test_status_light.cpp src/status_light.cpp)
+target_link_libraries(test_status_light nanoleaf s_curve Eigen3::Eigen3)

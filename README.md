@@ -29,6 +29,8 @@ approaches its path. Hands come over UDP from the RealSense/MediaPipe detector o
 | `src/supervision.*` | prediction, intrusion test, energy-limited speed, slow down / resume |
 | `src/robot_body.*` | the robot as capsules on libfranka's link frames, libfranka Jacobians shifted to points |
 | `src/overlay_udp.*` | the supervisor's view per frame to the detector's video (display only) |
+| `src/nanoleaf.*`, `src/nanoleaf_config.h` | Nanoleaf panels over UDP (extControl v2); controller IP, token, panel ids |
+| `src/status_light.*` | the supervisor's state per frame as a Nanoleaf colour (display only) |
 | `src/hand_receiver.*` | UDP receiver thread with the protocol's fail-safe rules |
 | `src/hand_udp_protocol.hpp` | wire format, copied from `udp-implementation` |
 | `src/seqlock.h`, `src/poses.h`, `src/confirm.h` | thread handoff, fixed poses, operator prompt |
@@ -36,6 +38,7 @@ approaches its path. Hands come over UDP from the RealSense/MediaPipe detector o
 | `apps/record_pose.cpp` | record a joint pose with the tool snapped to straight down |
 | `apps/calibrate_camera.cpp` | camera extrinsic `T_base_cam` from hand/EE point pairs |
 | `apps/test_hand_receiver.cpp` | UDP reception check without the robot |
+| `apps/test_nanoleaf.cpp` | shows every status colour on the Nanoleaf, without the robot |
 | `apps/show_capsules.cpp` | check the capsules and point Jacobians against the robot, live overlay |
 | `apps/read_state.cpp` | print robot and gripper state |
 | `tests/` | offline tests of the S-curves, re-planning, mass table and capsule geometry |
@@ -48,7 +51,7 @@ approaches its path. Hands come over UDP from the RealSense/MediaPipe detector o
 ```bash
 git clone --recursive <repo>      # or: git submodule update --init --recursive
 mkdir build && cd build && cmake .. && make -j4
-./test_s_curve && ./test_replan && ./test_mass_table && ./test_robot_body   # offline tests
+./test_s_curve && ./test_replan && ./test_mass_table && ./test_robot_body && ./test_status_light   # offline tests
 ```
 
 ## Run
