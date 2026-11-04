@@ -1,0 +1,16 @@
+# Hand appearances for scripts/replay_hands.py:  t_on,t_off,x,y,z,radius
+#   t_on, t_off  seconds since replay_hands.py started (with --loop: within each period)
+#   x, y, z      sphere center in the robot base frame [m]; nan = hand seen without a position
+#   radius       sphere radius [m] (detector: 0.10 / 0.13 / 0.18)
+#
+# Whole-robot test: a hand beside the elbow, off the EE's path. At the start pose the elbow
+# (link 4) sticks out to the robot's right (-y) at shoulder height while the gripper is on the left
+# (+y). From show_capsules --poses (2026-11-04), intrusion distance = radius + capsule radius +
+# radius_margin 0.20 m, clearance < 0 = exposed:
+#   start -> pre-pick:     link4 -0.12, link3 -0.10, link5 -0.04 m around sigma 0 (leaving start)
+#   pre-pick -> pre-place: nothing exposed
+#   pre-place -> start:    link4 -0.12, link3 -0.10, link5 -0.04 m around sigma 1 (arriving)
+#   tool capsules (link7, link7b, hand, fingers): at least 0.37 m outside, on every motion
+# Expected: slowdowns only in those two joint motions, limited by link3/4/5. With check_links off
+# (EE point only) there is no slowdown: the EE stays more than radius + 0.20 m away.
+0,3600,-0.05,-0.40,0.62,0.10
