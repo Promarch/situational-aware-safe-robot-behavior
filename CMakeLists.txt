@@ -51,6 +51,9 @@ add_executable(compare_mass apps/compare_mass.cpp)
 target_link_libraries(compare_mass robot_motion)
 target_compile_definitions(compare_mass PRIVATE PROJECT_DIR="${CMAKE_SOURCE_DIR}")
 
+add_executable(show_capsules apps/show_capsules.cpp)
+target_link_libraries(show_capsules robot_motion)
+
 add_executable(record_pose apps/record_pose.cpp)
 target_link_libraries(record_pose robot_motion)
 
