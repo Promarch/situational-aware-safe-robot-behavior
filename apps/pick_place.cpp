@@ -4,8 +4,10 @@
 //   (tool turned 90 deg) -> down, release -> up -> start
 // One confirmation at the start, then the whole task runs. Hands come over UDP (hand_udp
 // protocol) from the detector or scripts/replay_hands.py; HandReceiver's thread runs the
-// supervisor on every packet next to libfranka's 1 kHz control loop. While the screwdriver is
-// held, the supervisor's reference point is its tip (kObjectTip in the EE frame), else the EE.
+// supervisor on every packet next to libfranka's 1 kHz control loop. The supervisor tests the whole
+// robot (capsules on links 2-7, hand and fingers, see robot_body.h) against the hands; while the
+// screwdriver is held it is a capsule too (EE to kObjectTip, radius kObjectRadius), and the
+// reference point of the logs and the overlay's path is its tip, else the EE.
 // The screwdriver lies flat and is grasped from above, so it is held along the EE x axis; at the
 // pre-place pose the gripper is turned so that it hangs straight down into the holder.
 // Start the sender first: without a stream the hand position counts as unknown and every motion
@@ -24,11 +26,13 @@
 //     the energy limit used (v_safe = sqrt(2 S_lim / m_limit); all three empty at rest),
 //     contact (0 free: m_eff, 1 hand near the table while moving down: tabulated mass, 2 hand
 //     position unknown while moving down: the larger), hand_present (a hand seen, or position unknown),
-//     hand_unlocated (position unknown or stream stale), hand_clearance (reference point to the
-//     nearest located hand's intrusion boundary, sphere radius + margin; < 0 inside),
+//     hand_unlocated (position unknown or stream stale), hand_clearance (nearest located hand's
+//     intrusion boundary, sphere radius + margin, to the nearest robot capsule surface at this
+//     tick; < 0 inside), clearance_capsule (that capsule's name),
 //     dq1..dq7 measured, dq_d1..dq_d7 commanded [rad/s], tau_ext1..tau_ext7 estimated external
 //     joint torques [Nm]
-//   pick_place_decisions.csv: segment (motion index), t_segment, action (slow/resume), cap_percent
+//   pick_place_decisions.csv: segment (motion index), t_segment, action (slow/resume), cap_percent,
+//     contact and capsule at the contact point that set the cap
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
@@ -65,6 +69,7 @@ constexpr double kResetSpeedFactor = 0.2;  // MotionGenerator back to the start 
 constexpr double kGraspWidth = 0.017;        // finger distance on the handle [m]
 constexpr double kGraspEpsilon = 0.01;       // accepted deviation from kGraspWidth [m]
 const Eigen::Vector3d kObjectTip(0.15, 0.0, 0.0);  // tip in the EE frame [m]
+constexpr double kObjectRadius = 0.015;      // screwdriver as a capsule from the EE to the tip [m]
 constexpr double kReleaseClearance = 0.02;   // open this much wider than the handle [m]
 constexpr double kGripperSpeed = 0.05;       // [m/s]
 constexpr double kGraspForce = 20.0;         // [N]
@@ -106,6 +111,7 @@ int main(int argc, char** argv) {
   const auto port = static_cast<uint16_t>(argc > 2 ? std::atoi(argv[2]) : 5005);
   const auto overlay_port = static_cast<uint16_t>(argc > 3 ? std::atoi(argv[3]) : 5006);
   params.object_tip = kObjectTip;
+  params.object_radius = kObjectRadius;
   params.table_z = poses::kTableZ;
 
   if (std::isnan(poses::kPrePlaceJoints[0])) {
@@ -152,9 +158,13 @@ int main(int argc, char** argv) {
     const double tip_released = tip_pre_place.z() - poses::kPlaceDescent - poses::kTableZ;
 
     std::cout << std::fixed << std::setprecision(3) << "S_lim " << params.s_lim
-              << " J, intrusion radius: hand sphere + " << params.radius_margin * 100
-              << " cm, horizon " << params.horizon << " s, hold after slowdown "
-              << params.hold_after_slowdown << " s\n"
+              << " J, intrusion distance to the robot's capsules: hand sphere + "
+              << params.radius_margin * 100
+              << " cm, horizon " << params.horizon << " s, geometry: "
+              << (!params.check_links ? "reference point only (check_links off)"
+                  : params.franka_hand ? "links 2-7 + Franka Hand"
+                                       : "links 2-7 + reference point (no Franka Hand)")
+              << ", hold after slowdown " << params.hold_after_slowdown << " s\n"
               << "pick: EE " << ee_pre_pick.transpose() << ", tip once held "
               << tip_pre_pick.transpose() << " -> grasp at EE height " << z_grasp * 100
               << " cm, width "
@@ -270,23 +280,29 @@ int main(int argc, char** argv) {
     // --- Results.
     std::cout << "\nSupervisor decisions:\n";
     std::ofstream dec("pick_place_decisions.csv");
-    dec << "segment,t_segment,action,cap_percent,contact\n";
+    dec << "segment,t_segment,action,cap_percent,contact,capsule\n";
     for (const supervision::Decision& d : supervisor.decisions()) {
       const char* contact = d.contact == supervision::Contact::kConstrained ? "constrained"
                             : d.contact == supervision::Contact::kUnknown   ? "unknown"
                                                                             : "free";
       std::cout << "  " << kMotionNames[d.motion_id - 1] << " t=" << d.t_motion << " s: "
                 << (d.slow_down ? "slow down" : "resume") << ", cap " << d.cap_fraction * 100
-                << "%" << (d.slow_down ? std::string(" (") + contact + ")" : "") << "\n";
+                << "%"
+                << (d.slow_down ? std::string(" (") + contact + ", " +
+                                      robot_body::capsuleName(d.capsule) + ")"
+                                : std::string())
+                << "\n";
       dec << d.motion_id - 1 << "," << d.t_motion << "," << (d.slow_down ? "slow" : "resume")
-          << "," << d.cap_fraction * 100 << "," << contact << "\n";
+          << "," << d.cap_fraction * 100 << "," << contact << ","
+          << (d.slow_down ? robot_body::capsuleName(d.capsule) : "") << "\n";
     }
+    std::cout << "Longest supervisor frame: " << supervisor.maxFrameTime() * 1e3 << " ms\n";
 
     using Jacobian = Eigen::Matrix<double, 6, 7>;
     std::ofstream csv("pick_place.csv");
     csv << std::setprecision(7)
         << "t,segment,t_segment,ee_speed,v_safe,m_eff,m_limit,contact,hand_present,hand_unlocated,"
-           "hand_clearance";
+           "hand_clearance,clearance_capsule";
     for (const char* name : {"dq", "dq_d", "tau_ext"}) {
       for (int i = 1; i <= 7; ++i) csv << "," << name << i;
     }
@@ -315,18 +331,16 @@ int main(int argc, char** argv) {
           J.topRows<3>() * Eigen::Map<const Eigen::Matrix<double, 7, 1>>(r.dq_d.data());
       const double speed = v.norm();
       const double speed_d = v_d.norm();
-      // Contact as the supervisor sees it, for the current reference point: only while moving
-      // down, unknown without a position, constrained for a hand near the table within its
-      // intrusion distance.
-      const std::array<double, 16> T_ref =
-          model.pose(franka::Frame::kEndEffector, r.q, F_T_ref, start.EE_T_K);
-      const Eigen::Vector3d p_ref(T_ref[12], T_ref[13], T_ref[14]);
+      // Contact as the supervisor sees it, for the robot at this tick (not predicted): only while
+      // moving down, unknown without a position, constrained for a hand near the table whose
+      // intrusion distance reaches one of the robot's capsules.
+      std::vector<robot_body::Capsule> capsules;
+      if (hands_now.n_hands > 0) capsules = supervisor.body().capsules(r.q, at_tip);
       supervision::Contact contact = supervision::Contact::kFree;
       if (movesDown(r.motion)) {
         for (int h = 0; h < hands_now.n_hands; ++h) {
           const supervision::HandSphere& hand = hands_now.hands[h];
-          if (supervisor.nearTable(hand) &&
-              (p_ref - hand.center).norm() < hand.radius + params.radius_margin) {
+          if (supervisor.nearTable(hand) && supervisor.clearance(capsules, hand).distance < 0.0) {
             contact = supervision::Contact::kConstrained;
           }
         }
@@ -348,13 +362,16 @@ int main(int argc, char** argv) {
       csv << "," << static_cast<int>(contact) << "," << (hands_now.n_hands > 0 || hands_now.unlocated)
           << "," << hands_now.unlocated << ",";
       if (hands_now.n_hands > 0) {
-        double clearance = INFINITY;
+        robot_body::Nearest nearest;
+        nearest.distance = INFINITY;
         for (int h = 0; h < hands_now.n_hands; ++h) {
-          const supervision::HandSphere& hand = hands_now.hands[h];
-          clearance = std::min(clearance,
-                               (p_ref - hand.center).norm() - hand.radius - params.radius_margin);
+          const robot_body::Nearest n = supervisor.clearance(capsules, hands_now.hands[h]);
+          if (n.distance < nearest.distance) nearest = n;
         }
-        csv << clearance;
+        csv << nearest.distance << ","
+            << (nearest.index >= 0 ? robot_body::capsuleName(capsules[nearest.index].id) : "");
+      } else {
+        csv << ",";
       }
       for (const scurve::Vec7* v7 : {&r.dq, &r.dq_d, &r.tau_ext}) {
         for (double x : *v7) csv << "," << x;

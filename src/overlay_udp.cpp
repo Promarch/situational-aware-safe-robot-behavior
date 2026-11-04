@@ -13,8 +13,9 @@
 
 namespace {
 constexpr uint32_t kMagic = 0x4C564F52;  // "ROVL"
-constexpr uint16_t kVersion = 1;
+constexpr uint16_t kVersion = 2;
 constexpr size_t kMaxPoints = 255;
+constexpr size_t kMaxCapsules = 255;
 
 class Writer {
  public:
@@ -49,6 +50,7 @@ OverlaySender::~OverlaySender() {
 
 void OverlaySender::send(const supervision::Overlay& o) {
   const size_t n_points = std::min(o.predicted.size(), kMaxPoints);
+  const size_t n_capsules = std::min(o.capsules.size(), kMaxCapsules);
   const int n_hands = std::clamp(o.hands.n_hands, 0, supervision::kMaxHands);
   Writer w;
   w.put(kMagic);
@@ -64,13 +66,27 @@ void OverlaySender::send(const supervision::Overlay& o) {
   w.put3(o.reference);
   w.put(static_cast<uint8_t>(n_points));
   w.put(static_cast<uint8_t>(n_hands));
-  w.put(static_cast<uint16_t>(0));
+  w.put(static_cast<uint8_t>(n_capsules));
+  w.put(o.limiting_capsule);
+  w.put3(o.limiting_point);
   for (size_t k = 0; k < n_points; ++k) w.put3(o.predicted[k]);
+  for (size_t k = 0; k < n_capsules; ++k) {
+    const robot_body::Capsule& c = o.capsules[k];
+    w.put3(c.a);
+    w.put3(c.b);
+    w.put(static_cast<float>(c.radius));
+    w.put(c.id);
+    for (int i = 0; i < 3; ++i) w.put(static_cast<uint8_t>(0));
+  }
   for (int h = 0; h < n_hands; ++h) {
+    const supervision::HandAssessment& a = o.assessment[h];
     w.put3(o.hands.hands[h].center);
     w.put(static_cast<float>(o.hands.hands[h].radius));
-    w.put(static_cast<uint8_t>(o.status[h]));
-    for (int i = 0; i < 3; ++i) w.put(static_cast<uint8_t>(0));
+    w.put(static_cast<uint8_t>(a.status));
+    w.put(a.capsule);
+    w.put(a.exposed);
+    w.put(static_cast<float>(a.clearance));
+    w.put3(a.closest);
   }
   // Errors (e.g. ECONNREFUSED while no detector listens) are ignored: display only.
   (void)::send(fd_, w.buf.data(), w.buf.size(), MSG_DONTWAIT);

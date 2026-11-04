@@ -91,7 +91,7 @@ ax_v.set_ylabel("speed [m/s]")
 ax_v.legend(loc="upper right", fontsize=8)
 decorate(ax_v, label_segments=True)
 ax_d.plot(x, per_segment(d["hand_clearance"]), color="tab:blue",
-          label="EE clearance to the hand (distance − sphere radius − margin)")
+          label="robot clearance to the hand (capsule surface distance − sphere radius − margin)")
 ax_d.axhline(0.0, color="tab:red", ls=":", lw=1, label="intrusion boundary")
 ax_d.set_ylabel("clearance [m]")
 ax_d.set_xlabel("motion time [s]   (gray: hand; pink: position unknown / stream stale; dashed: red slow down, green resume)")
