@@ -31,7 +31,7 @@ target_link_libraries(s_curve PUBLIC Franka::Franka)
 
 # Robot motions, hand-aware speed supervision and the UDP hand receiver.
 add_library(robot_motion STATIC src/motion.cpp src/supervision.cpp src/hand_receiver.cpp
-            src/overlay_udp.cpp
+            src/overlay_udp.cpp src/robot_body.cpp
             src/mass_table.cpp)
 target_link_libraries(robot_motion PUBLIC s_curve examples_common Threads::Threads)
 
@@ -66,3 +66,6 @@ target_link_libraries(test_replan s_curve)
 
 add_executable(test_mass_table tests/test_mass_table.cpp src/mass_table.cpp)
 target_include_directories(test_mass_table PRIVATE src)
+
+add_executable(test_robot_body tests/test_robot_body.cpp src/robot_body.cpp)
+target_link_libraries(test_robot_body s_curve Eigen3::Eigen3)
